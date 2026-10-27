@@ -1,0 +1,6 @@
+rasterio==1.4.4
+rio-tiler==9.4.12
+shapely==2.2.0
+# Only needed by compare_quality.py
+scikit-image==0.26.0
+pillow==13.0.0
