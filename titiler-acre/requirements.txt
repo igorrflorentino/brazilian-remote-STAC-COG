@@ -1,0 +1,6 @@
+titiler.core==2.4.0
+titiler.extensions==2.4.0
+uvicorn==0.54.0
+# rasterio 1.5.x requires Python >= 3.12; 1.4.4 ships wheels for both the
+# python:3.11 container and newer local interpreters, so GDAL matches everywhere.
+rasterio==1.4.4
