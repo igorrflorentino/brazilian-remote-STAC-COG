@@ -16,10 +16,17 @@ ENV GDAL_DISABLE_READDIR_ON_OPEN=EMPTY_DIR \
 
 WORKDIR /app
 
+# rasterio wheels link against the system libexpat, which the slim image lacks.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app.py .
+# Fail the build, not the Cloud Run revision, if a native library is missing.
+RUN python -c "import app"
 
 RUN useradd --create-home --uid 10001 app
 USER app
