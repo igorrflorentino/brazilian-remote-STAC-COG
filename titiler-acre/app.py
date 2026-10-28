@@ -1,4 +1,9 @@
-"""TiTiler service exposing INPE CBERS-4A WPM COGs as WMTS for Atlas."""
+"""TiTiler service exposing CBERS-4A WPM COGs as WMTS for Atlas.
+
+The COGs are JPEG copies of INPE's CB4A-WPM-PCA-FUSED scenes (CC BY 4.0,
+INPE / Brazil Data Cube) kept in a private bucket and read through /vsigs/
+with the Cloud Run service account.
+"""
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -23,23 +28,23 @@ from titiler.core.factory import TilerFactory
 from titiler.core.middleware import CacheControlMiddleware
 from titiler.extensions import wmtsExtension
 
-ALLOWED_PREFIX = "https://data.inpe.br/bdc/data/CB4A-WPM-PCA-FUSED/"
+ALLOWED_PREFIX = "gs://brazilian-remote-stac-cog-cbers4a-wpm/"
 
 # Largest output (pixels per side) for preview, bbox, feature and statistics.
 # A 2 m scene is ~56k px wide, so uncapped requests could exhaust the 2 GiB instance.
 MAX_IMAGE_SIZE = 2048
 
-# GDAL messages meaning the COG is not on data.inpe.br (wrong path or extension).
+# GDAL messages meaning the COG is not in the bucket (wrong path or extension).
 NOT_FOUND_MARKERS = ("HTTP response code: 404", "does not exist in the file system")
 
 
-def InpeDatasetPathParams(
+def BucketDatasetPathParams(
     url: Annotated[
         str,
         Query(description=f"CBERS-4A WPM COG URL, must start with {ALLOWED_PREFIX}"),
     ],
 ) -> str:
-    """Accept only COGs from the INPE collection so the service is not an open proxy."""
+    """Accept only COGs from the bucket so the service is not an open proxy."""
     # Reject ".." (also double-encoded) so a URL cannot climb out of the prefix.
     if not url.startswith(ALLOWED_PREFIX) or ".." in unquote(url):
         raise HTTPException(
@@ -93,12 +98,15 @@ def scene_identifier(src_path: str) -> str:
 
 app = FastAPI(
     title="titiler-acre",
-    description="WMTS for INPE CBERS-4A WPM 2 m COGs (CB4A-WPM-PCA-FUSED).",
+    description=(
+        "WMTS for CBERS-4A WPM 2 m COGs (INPE CB4A-WPM-PCA-FUSED, CC BY 4.0, "
+        "INPE / Brazil Data Cube)."
+    ),
     version=titiler_version,
 )
 
 cog = TilerFactory(
-    path_dependency=InpeDatasetPathParams,
+    path_dependency=BucketDatasetPathParams,
     # Atlas works in Web Mercator; a single TMS keeps one layer per scene and
     # avoids reopening the COG once per grid on every GetCapabilities.
     supported_tms=TileMatrixSets(
@@ -121,7 +129,7 @@ _cog_io_error = exception_handler_factory(
 
 
 def rasterio_io_error_handler(request: Request, exc: RasterioIOError):
-    """Return 404 when the COG is missing on data.inpe.br, 500 for other I/O errors."""
+    """Return 404 when the COG is missing from the bucket, 500 for other I/O errors."""
     if any(marker in str(exc) for marker in NOT_FOUND_MARKERS):
         return _cog_not_found(request, exc)
     return _cog_io_error(request, exc)

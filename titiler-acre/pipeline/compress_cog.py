@@ -35,7 +35,7 @@ def write_rgba(src_path: Path, rgba_path: Path) -> None:
             blockysize=512,
             interleave="pixel",
             photometric="RGB",
-            alpha="UNASSOCIATED",
+            alpha="YES",  # unassociated alpha
             compress="ZSTD",
             zstd_level=1,
             predictor=2,
