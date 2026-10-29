@@ -7,7 +7,11 @@ delete the temporary files. Failures are logged and the batch moves on;
 re-running skips scenes that already have a marker and resumes partial
 downloads.
 
-Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--limit N] [--max-mbps 20]
+--rgb keeps the JPEG in RGB instead of YCbCr, for the scenes in
+scenes_rgb.txt: their narrow rescale turns YCbCr's small colour errors into
+visible blotches. RGB files are about 2.5x larger.
+
+Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--rgb] [--limit N] [--max-mbps 20]
 """
 
 import argparse
@@ -22,7 +26,7 @@ from pathlib import Path
 import rasterio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compress_cog import GDAL_ENV, write_rgba, write_variant  # noqa: E402
+from compress_cog import GDAL_ENV, write_jpeg_rgb, write_rgba, write_variant  # noqa: E402
 from fetch_scene import download  # noqa: E402
 from make_links import cog_url, scene_path  # noqa: E402
 
@@ -30,7 +34,7 @@ CODEC, QUALITY = "jpeg", 85
 PAUSE_S = 30  # between scenes, to stay gentle with data.inpe.br
 ATTRIBUTION = "INPE - Brazil Data Cube (CC BY 4.0)"
 # CC BY 4.0 asks to say the material was changed. No commas: gcloud splits on them.
-MODIFICATIONS = "Recompressed from DEFLATE to JPEG quality 85 (YCbCr with internal mask)"
+MODIFICATIONS = "Recompressed from DEFLATE to JPEG quality 85 ({} with internal mask)"
 GCLOUD = shutil.which("gcloud")
 log = logging.getLogger("process_all")
 
@@ -40,13 +44,13 @@ def object_uri(gs_prefix: str, scene: str) -> str:
     return f"{gs_prefix.rstrip('/')}/{scene_path(scene)}"
 
 
-def check_cog(path: Path) -> None:
+def check_cog(path: Path, rgb: bool) -> None:
     with rasterio.open(path) as ds:
         struct = ds.tags(ns="IMAGE_STRUCTURE")
         problems = []
         if struct.get("LAYOUT") != "COG":
             problems.append(f"layout={struct.get('LAYOUT')}")
-        if struct.get("COMPRESSION") != "YCbCr JPEG":
+        if struct.get("COMPRESSION") != ("JPEG" if rgb else "YCbCr JPEG"):
             problems.append(f"compression={struct.get('COMPRESSION')}")
         if ds.count != 3 or "per_dataset" not in [f.name for f in ds.mask_flag_enums[0]]:
             problems.append("expected 3 bands with an internal mask")
@@ -60,13 +64,14 @@ def gcloud(*args: str) -> str:
     return subprocess.run([GCLOUD, *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def process(scene: str, work: Path, gs_prefix: str, max_mbps: float) -> dict:
+def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, rgb: bool) -> dict:
     url = cog_url(scene)
     src = work / Path(url).name
     rgba = work / f"{src.stem}_rgba.tif"
+    lossless = work / f"{src.stem}_lossless.tif"
     out = work / f"{src.stem}_{CODEC}{QUALITY}.tif"
     uri = object_uri(gs_prefix, scene)
-    for stale in (rgba, out):  # left over by an interrupted run
+    for stale in (rgba, lossless, out):  # left over by an interrupted run
         stale.unlink(missing_ok=True)
 
     timings = {}
@@ -78,14 +83,18 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float) -> dict:
     t0 = time.monotonic()
     with rasterio.Env(**GDAL_ENV):
         write_rgba(src, rgba)
-        write_variant(rgba, out, CODEC, QUALITY)
-    check_cog(out)
+        if rgb:
+            write_jpeg_rgb(rgba, out, QUALITY, lossless)
+        else:
+            write_variant(rgba, out, CODEC, QUALITY)
+    check_cog(out, rgb)
     timings["compress_s"] = round(time.monotonic() - t0)
 
     t0 = time.monotonic()
+    modifications = MODIFICATIONS.format("RGB" if rgb else "YCbCr")
     gcloud(
         "storage", "cp", str(out), uri,
-        f"--custom-metadata=source={url},attribution={ATTRIBUTION},modifications={MODIFICATIONS}",
+        f"--custom-metadata=source={url},attribution={ATTRIBUTION},modifications={modifications}",
     )
     remote = int(gcloud("storage", "objects", "describe", uri, "--format=value(size)"))
     if remote != out.stat().st_size:
@@ -96,6 +105,7 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float) -> dict:
         "scene": scene,
         "source": url,
         "uri": uri,
+        "photometric": "RGB" if rgb else "YCbCr",
         "original_bytes": src.stat().st_size,
         "cog_bytes": out.stat().st_size,
         **timings,
@@ -110,6 +120,7 @@ def main() -> None:
     parser.add_argument("scenes", type=Path)
     parser.add_argument("work_dir", type=Path)
     parser.add_argument("gs_prefix", help="e.g. gs://my-bucket")
+    parser.add_argument("--rgb", action="store_true", help="Write RGB JPEG instead of YCbCr (see scenes_rgb.txt)")
     parser.add_argument("--limit", type=int, default=0, help="Process at most N pending scenes")
     parser.add_argument("--max-mbps", type=float, default=20)
     args = parser.parse_args()
@@ -135,7 +146,7 @@ def main() -> None:
     for i, scene in enumerate(pending, 1):
         log.info("[%d/%d] %s", i, len(pending), scene)
         try:
-            result = process(scene, args.work_dir, args.gs_prefix, args.max_mbps)
+            result = process(scene, args.work_dir, args.gs_prefix, args.max_mbps, args.rgb)
         except Exception as e:  # keep going; the scene is retried on the next run
             detail = e.stderr if isinstance(e, subprocess.CalledProcessError) else e
             log.exception("FAILED %s: %s", scene, detail)

@@ -5,7 +5,11 @@ Step 1 writes a tiled RGBA GeoTIFF whose alpha marks valid pixels (any band
 each variant from it: JPEG turns the alpha into an internal 1-bit mask and
 uses YCbCr, WEBP keeps the alpha channel. Overviews use AVERAGE.
 
-Usage: python compress_cog.py <SRC_TIF> <OUT_DIR> jpeg:85 webp:90 ...
+jpeg_rgb is JPEG without YCbCr, for scenes with a narrow rescale: the COG
+driver always writes 3-band JPEG as YCbCr, so it goes through the GTiff
+driver instead (see write_jpeg_rgb).
+
+Usage: python compress_cog.py <SRC_TIF> <OUT_DIR> jpeg:85 jpeg_rgb:85 webp:90 ...
 """
 
 import argparse
@@ -14,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
-from rasterio.enums import ColorInterp
+from rasterio.enums import ColorInterp, Resampling
 from rasterio.shutil import copy as rio_copy
 from rasterio.windows import Window
 
@@ -67,6 +71,51 @@ def write_variant(rgba_path: Path, out_path: Path, codec: str, quality: int) -> 
     )
 
 
+def overview_factors(width: int, height: int, block: int = 512) -> list[int]:
+    """Powers of 2 down to the first level that fits in one block, as the COG driver picks them."""
+    factors, size = [], max(width, height)
+    while size > block:
+        size = -(-size // 2)
+        factors.append(2 ** (len(factors) + 1))
+    return factors
+
+
+def write_jpeg_rgb(rgba_path: Path, out_path: Path, quality: int, lossless_path: Path) -> None:
+    """Write a 3-band JPEG COG kept in RGB, i.e. without YCbCr and its 4:2:0 chroma.
+
+    YCbCr's colour errors are 1-2 levels, but a narrow rescale (20 levels
+    stretched to 255) turns them into visible 16 px blotches and a colour
+    cast. The COG driver forces YCbCr for JPEG, so write a lossless masked
+    copy with AVERAGE overviews first, then let the GTiff driver copy it with
+    COPY_SRC_OVERVIEWS, which gives the same COG layout.
+    """
+    with rasterio.Env(GDAL_TIFF_INTERNAL_MASK=True):
+        with rasterio.open(rgba_path) as src:
+            profile = src.profile
+            profile.update(count=3, photometric="RGB", compress="ZSTD", zstd_level=1, predictor=2, bigtiff="YES")
+            with rasterio.open(lossless_path, "w", **profile) as dst:
+                for row in range(0, src.height, STRIP_ROWS):
+                    window = Window(0, row, src.width, min(STRIP_ROWS, src.height - row))
+                    dst.write(src.read([1, 2, 3], window=window), window=window)
+                    dst.write_mask(src.read(4, window=window), window=window)
+                dst.build_overviews(overview_factors(src.width, src.height), Resampling.average)
+        rio_copy(
+            lossless_path,
+            out_path,
+            driver="GTiff",
+            COPY_SRC_OVERVIEWS="YES",
+            TILED="YES",
+            BLOCKXSIZE=512,
+            BLOCKYSIZE=512,
+            COMPRESS="JPEG",
+            JPEG_QUALITY=quality,
+            PHOTOMETRIC="RGB",
+            BIGTIFF="IF_SAFER",
+            NUM_THREADS="ALL_CPUS",
+        )
+    lossless_path.unlink()
+
+
 def describe(path: Path) -> str:
     """One-line summary of a written COG."""
     with rasterio.open(path) as ds:
@@ -83,7 +132,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("src", type=Path)
     parser.add_argument("out_dir", type=Path)
-    parser.add_argument("variants", nargs="+", help="codec:quality, e.g. jpeg:85 webp:90")
+    parser.add_argument("variants", nargs="+", help="codec:quality, e.g. jpeg:85 jpeg_rgb:85 webp:90")
     parser.add_argument("--keep-rgba", action="store_true", help="Keep the RGBA intermediate")
     args = parser.parse_args()
 
@@ -98,7 +147,10 @@ def main() -> None:
             codec, quality = spec.split(":")
             out = args.out_dir / f"{args.src.stem}_{codec}{quality}.tif"
             t0 = time.monotonic()
-            write_variant(rgba, out, codec, int(quality))
+            if codec == "jpeg_rgb":
+                write_jpeg_rgb(rgba, out, int(quality), out.with_name(f"{out.stem}_lossless.tif"))
+            else:
+                write_variant(rgba, out, codec, int(quality))
             print(f"{describe(out)} in {time.monotonic() - t0:.0f}s", flush=True)
     if not args.keep_rgba:
         rgba.unlink()
