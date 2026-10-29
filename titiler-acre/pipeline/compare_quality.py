@@ -23,6 +23,8 @@ from rio_tiler.io import Reader
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 from skimage.morphology import dilation
 
+from scene_stats import MAX_SIZE, widen
+
 TMS = morecantile.tms.get("WebMercatorQuad")
 QUALITY_ZOOMS = (12, 14, 16)
 EDGE_ZOOMS = (9, 12, 14, 16)
@@ -34,18 +36,10 @@ FRINGE_PX = 3  # distance from the transparent area checked for fringes
 MAGENTA = np.array([255, 0, 255], dtype=np.uint8)
 
 
-def rescale_ranges(src: Reader) -> list[tuple[float, float]]:
-    """Per-band 2-98 % ranges with a minimum width of 20, as used in the links."""
-    stats = src.statistics(max_size=256, percentiles=[2, 98], indexes=(1, 2, 3))
-    ranges = []
-    for band in ("b1", "b2", "b3"):
-        s = stats[band].model_dump()
-        lo, hi = s["percentile_2"], s["percentile_98"]
-        if hi - lo < 20:
-            lo = min(max(0.0, (lo + hi) / 2 - 10), 235.0)
-            hi = lo + 20
-        ranges.append((float(lo), float(hi)))
-    return ranges
+def rescale_ranges(src: Reader) -> list[tuple[int, int]]:
+    """Per-band 2-98 % ranges, rounded and widened exactly as scene_stats.py writes them for the links."""
+    stats = src.statistics(max_size=MAX_SIZE, percentiles=[2, 98], indexes=(1, 2, 3))
+    return [widen(stats[b].model_dump()["percentile_2"], stats[b].model_dump()["percentile_98"]) for b in ("b1", "b2", "b3")]
 
 
 def to_rgb(img, ranges=None) -> np.ndarray:

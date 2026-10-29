@@ -80,7 +80,8 @@ def main() -> None:
     stats = read_stats(args.stats)
 
     cold, warm, ok, tile_url = [], [], True, None
-    for scene in args.scenes:
+    scenes = [s.strip() for s in args.scenes]  # $(cat scenes.txt) keeps \r on CRLF checkouts
+    for scene in scenes:
         r = check_scene(base, scene, stats[scene])
         if "error" in r:
             print(f"FAIL {scene}: {r['error']}")
@@ -105,7 +106,7 @@ def main() -> None:
     if warm:
         print(f"tiles: cold mean {statistics.mean(cold):.2f}s max {max(cold):.2f}s | warm mean {statistics.mean(warm):.2f}s max {max(warm):.2f}s")
 
-    scene = args.scenes[0]
+    scene = scenes[0]
     guard = [
         ("INPE URL", cog_url(scene), 403),
         ("other bucket", "gs://some-other-bucket/x.tif", 403),

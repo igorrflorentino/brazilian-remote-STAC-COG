@@ -9,7 +9,8 @@ downloads.
 
 --rgb keeps the JPEG in RGB instead of YCbCr, for the scenes in
 scenes_rgb.txt: their narrow rescale turns YCbCr's small colour errors into
-visible blotches. RGB files are about 2.5x larger.
+visible blotches. RGB files are about 2.8x larger (2.4-2.9x over those 19
+scenes).
 
 Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--rgb] [--limit N] [--max-mbps 20]
 """
@@ -122,7 +123,7 @@ def main() -> None:
     parser.add_argument("gs_prefix", help="e.g. gs://my-bucket")
     parser.add_argument("--rgb", action="store_true", help="Write RGB JPEG instead of YCbCr (see scenes_rgb.txt)")
     parser.add_argument("--limit", type=int, default=0, help="Process at most N pending scenes")
-    parser.add_argument("--max-mbps", type=float, default=20)
+    parser.add_argument("--max-mbps", type=float, default=20, help="Download throughput cap in MB/s (0 = none)")
     args = parser.parse_args()
 
     markers = args.work_dir / "done"
