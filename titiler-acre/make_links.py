@@ -1,9 +1,10 @@
 """Build WMTS GetCapabilities links for every scene in scenes_acre.txt.
 
 Links point at the JPEG COG copies in the private bucket and carry each
-scene's per-band rescale from stats.txt. They omit nodata=0: the COGs carry
-an internal mask, and nodata=0 would bypass it and show JPEG edge noise as a
-black fringe.
+scene's per-band rescale from stats.txt, plus a gamma that lifts the dark
+forest without clipping rivers and pasture. They omit nodata=0: the COGs
+carry an internal mask, and nodata=0 would bypass it and show JPEG edge
+noise as a black fringe.
 
 Usage: python make_links.py <BASE_URL>
 Writes wmts_links.csv (columns: scene, wmts_url) next to this script.
@@ -19,6 +20,7 @@ INPE_ROOT = "https://data.inpe.br/bdc/data/CB4A-WPM-PCA-FUSED"
 GS_ROOT = "gs://brazilian-remote-stac-cog-cbers4a-wpm"
 SCENE_RE = re.compile(r"^(?P<date>(?P<yyyy>\d{4})(?P<mm>\d{2})\d{2})_(?P<path>\d{3})_(?P<row>\d{3})$")
 STATS_RE = re.compile(r"^(?P<scene>\d{8}_\d{3}_\d{3}):(?P<ranges>\d+-\d+(?:\|\d+-\d+){2})$")
+COLOR_FORMULA = "gamma RGB 1.3"  # rio-color, applied by TiTiler after the rescale
 HERE = Path(__file__).resolve().parent
 
 
@@ -63,7 +65,10 @@ def wmts_url(base_url: str, scene: str, ranges: list[tuple[int, int]]) -> str:
     """Return the WMTS GetCapabilities URL for a scene."""
     encoded = quote(gs_url(scene), safe="")
     rescale = "".join(f"&rescale={lo},{hi}" for lo, hi in ranges)
-    return f"{base_url}/cog/WMTSCapabilities.xml?url={encoded}&bidx=1&bidx=2&bidx=3{rescale}"
+    return (
+        f"{base_url}/cog/WMTSCapabilities.xml?url={encoded}&bidx=1&bidx=2&bidx=3{rescale}"
+        f"&color_formula={quote(COLOR_FORMULA)}"
+    )
 
 
 def main() -> None:

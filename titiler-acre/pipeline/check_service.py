@@ -1,7 +1,7 @@
 """Smoke-test the TiTiler service: WMTS capabilities, tiles and the URL guard.
 
-For each scene: GetCapabilities with the scene's rescale (as make_links.py
-builds it), then the tile at the scene centre at zooms 9, 13 and 16 through
+For each scene: GetCapabilities with the scene's rescale and color formula
+(as make_links.py builds it), then the tile at the scene centre at zooms 9, 13 and 16 through
 the WMTS template, fetched twice (cold, then warm). Also checks that URLs
 outside the bucket get 403, a missing object 404 and oversized tiles 422.
 
@@ -57,6 +57,7 @@ def check_scene(base: str, scene: str, ranges) -> dict:
         "caps_s": t_caps,
         "template_https": template.startswith("https://") or base.startswith("http://127."),
         "template_rescale": template.count("rescale="),
+        "template_color": "color_formula=" in template,
     }
     for z in ZOOMS:
         t = TMS.tile((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, z)
@@ -98,10 +99,10 @@ def main() -> None:
                 cold.append(v[0])
                 warm.append(v[1])
                 cells.append(f"z{z} cold {v[0]:.2f}s warm {v[1]:.2f}s {v[2] // 1024}KB")
-        ok &= r["layers"] == 1 and r["template_https"] and r["template_rescale"] == 3
+        ok &= r["layers"] == 1 and r["template_https"] and r["template_rescale"] == 3 and r["template_color"]
         print(
             f"{scene}: caps {r['caps_s']:.2f}s layers={r['layers']} https={r['template_https']} "
-            f"rescale={r['template_rescale']} | " + " | ".join(cells)
+            f"rescale={r['template_rescale']} color={r['template_color']} | " + " | ".join(cells)
         )
     if warm:
         print(f"tiles: cold mean {statistics.mean(cold):.2f}s max {max(cold):.2f}s | warm mean {statistics.mean(warm):.2f}s max {max(warm):.2f}s")
