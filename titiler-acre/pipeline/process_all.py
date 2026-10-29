@@ -7,7 +7,7 @@ delete the temporary files. Failures are logged and the batch moves on;
 re-running skips scenes that already have a marker and resumes partial
 downloads.
 
-Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--limit N]
+Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--limit N] [--max-mbps 20]
 """
 
 import argparse
@@ -29,6 +29,8 @@ from make_links import cog_url, scene_path  # noqa: E402
 CODEC, QUALITY = "jpeg", 85
 PAUSE_S = 30  # between scenes, to stay gentle with data.inpe.br
 ATTRIBUTION = "INPE - Brazil Data Cube (CC BY 4.0)"
+# CC BY 4.0 asks to say the material was changed. No commas: gcloud splits on them.
+MODIFICATIONS = "Recompressed from DEFLATE to JPEG quality 85 (YCbCr with internal mask)"
 GCLOUD = shutil.which("gcloud")
 log = logging.getLogger("process_all")
 
@@ -83,7 +85,7 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float) -> dict:
     t0 = time.monotonic()
     gcloud(
         "storage", "cp", str(out), uri,
-        f"--custom-metadata=source={url},attribution={ATTRIBUTION}",
+        f"--custom-metadata=source={url},attribution={ATTRIBUTION},modifications={MODIFICATIONS}",
     )
     remote = int(gcloud("storage", "objects", "describe", uri, "--format=value(size)"))
     if remote != out.stat().st_size:

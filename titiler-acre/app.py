@@ -11,14 +11,14 @@ from typing import Annotated
 from urllib.parse import unquote, urlsplit
 
 import morecantile
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from morecantile import TileMatrixSets
 from pydantic import Field
 from rasterio.errors import RasterioIOError
 from starlette.middleware.cors import CORSMiddleware
 
 from titiler.core import __version__ as titiler_version
-from titiler.core.dependencies import PartFeatureParams, PreviewParams
+from titiler.core.dependencies import PartFeatureParams, PreviewParams, TileParams
 from titiler.core.errors import (
     DEFAULT_STATUS_CODES,
     add_exception_handlers,
@@ -30,9 +30,20 @@ from titiler.extensions import wmtsExtension
 
 ALLOWED_PREFIX = "gs://brazilian-remote-stac-cog-cbers4a-wpm/"
 
+# CC BY 4.0 asks to credit the source and to say the material was changed.
+ATTRIBUTION = (
+    "CBERS-4A WPM imagery: INPE / Brazil Data Cube (CB4A-WPM-PCA-FUSED, CC BY 4.0), "
+    "recompressed by this service to JPEG quality 85"
+)
+
 # Largest output (pixels per side) for preview, bbox, feature and statistics.
 # A 2 m scene is ~56k px wide, so uncapped requests could exhaust the 2 GiB instance.
 MAX_IMAGE_SIZE = 2048
+
+# Largest tile side and tile buffer/padding. Atlas asks for 256 px tiles; 1024
+# leaves room for high-DPI clients while one tile stays a few MB of memory.
+MAX_TILE_SIZE = 1024
+MAX_TILE_BUFFER = 64
 
 # GDAL messages meaning the COG is not in the bucket (wrong path or extension).
 NOT_FOUND_MARKERS = ("HTTP response code: 404", "does not exist in the file system")
@@ -91,6 +102,29 @@ class CappedPartFeatureParams(PartFeatureParams):
     ] = None
 
 
+@dataclass
+class CappedTileParams(TileParams):
+    """Tile buffer/padding capped at MAX_TILE_BUFFER."""
+
+    buffer: Annotated[
+        float | None,
+        Query(description="Buffer on each side of the tile (multiple of 0.5).", gt=0, le=MAX_TILE_BUFFER),
+    ] = None
+    padding: Annotated[
+        int | None,
+        Query(description="Padding to apply to each tile edge.", gt=0, le=MAX_TILE_BUFFER),
+    ] = None
+
+
+def TileSizeLimit(
+    tilesize: Annotated[
+        int | None,
+        Query(description="Tilesize in pixels.", gt=0, le=MAX_TILE_SIZE),
+    ] = None,
+) -> None:
+    """Cap tilesize, which TilerFactory declares on the tile routes themselves."""
+
+
 def scene_identifier(src_path: str) -> str:
     """Use the COG file name (without .tif) as the WMTS layer identifier."""
     return PurePosixPath(urlsplit(src_path).path).stem
@@ -98,10 +132,7 @@ def scene_identifier(src_path: str) -> str:
 
 app = FastAPI(
     title="titiler-acre",
-    description=(
-        "WMTS for CBERS-4A WPM 2 m COGs (INPE CB4A-WPM-PCA-FUSED, CC BY 4.0, "
-        "INPE / Brazil Data Cube)."
-    ),
+    description=f"WMTS for CBERS-4A WPM 2 m COGs. {ATTRIBUTION}.",
     version=titiler_version,
 )
 
@@ -114,10 +145,17 @@ cog = TilerFactory(
     ),
     img_preview_dependency=CappedPreviewParams,
     img_part_dependency=CappedPartFeatureParams,
+    tile_dependency=CappedTileParams,
     extensions=[wmtsExtension(layer_identifier_provider=scene_identifier)],
     router_prefix="/cog",
 )
-app.include_router(cog.router, prefix="/cog", tags=["Cloud Optimized GeoTIFF"])
+# Router-wide, so tilejson/map links cannot carry an oversized tilesize either.
+app.include_router(
+    cog.router,
+    prefix="/cog",
+    tags=["Cloud Optimized GeoTIFF"],
+    dependencies=[Depends(TileSizeLimit)],
+)
 
 # Map rio-tiler errors (e.g. tile outside the scene) to 4xx instead of 500.
 add_exception_handlers(app, DEFAULT_STATUS_CODES)
@@ -163,6 +201,7 @@ def root() -> dict:
         "status": "ok",
         "titiler_version": titiler_version,
         "allowed_prefix": ALLOWED_PREFIX,
+        "attribution": ATTRIBUTION,
         "wmts": "/cog/WMTSCapabilities.xml?url=<encoded COG URL>&bidx=1&bidx=2&bidx=3",
     }
 

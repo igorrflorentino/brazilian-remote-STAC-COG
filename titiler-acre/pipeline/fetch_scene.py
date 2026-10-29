@@ -2,8 +2,9 @@
 
 A single streamed GET is far gentler on data.inpe.br than the thousands of
 range requests a full /vsicurl/ read issues. The download resumes from a
-.part file, backs off exponentially on 429/5xx and network errors (honouring
-Retry-After), and can cap throughput.
+.part file (guarded by If-Range, so a file changed upstream restarts instead
+of being spliced), backs off exponentially on 429/5xx and network errors
+(honouring Retry-After), and can cap throughput.
 
 Usage: python fetch_scene.py <SCENE_ID> <OUT_DIR> [--max-mbps 20]
 """
@@ -36,23 +37,33 @@ def backoff(attempt: int, retry_after: str | None = None) -> float:
 def download(url: str, dest: Path, max_mbps: float) -> Path:
     """Download url to dest, resuming from dest.part if present."""
     part = dest.with_name(dest.name + ".part")
+    # Validator (strong ETag or Last-Modified) of the bytes in .part, sent as
+    # If-Range on resume: if the file changed upstream the server answers 200
+    # with the new file instead of appending it to the old one.
+    validator = part.with_name(part.name + ".etag")
     total = None
     attempt = 0
     while True:
         have = part.stat().st_size if part.exists() else 0
         if total is not None and have >= total:
             break
-        req = urllib.request.Request(
-            url,
-            headers={"Range": f"bytes={have}-", "User-Agent": "titiler-acre-pipeline/1.0"},
-        )
+        headers = {"Range": f"bytes={have}-", "User-Agent": "titiler-acre-pipeline/1.0"}
+        if have and validator.exists():
+            headers["If-Range"] = validator.read_text(encoding="utf-8")
+        req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 if r.status == 206:
                     total = int(r.headers["Content-Range"].rsplit("/", 1)[1])
                     mode = "ab"
-                else:  # server ignored the range: start over
+                else:  # range ignored or file changed upstream: start over
                     total, have, mode = int(r.headers["Content-Length"]), 0, "wb"
+                etag = r.headers.get("ETag", "")
+                tag = etag if etag and not etag.startswith("W/") else r.headers.get("Last-Modified")
+                if tag:
+                    validator.write_text(tag, encoding="utf-8")
+                else:
+                    validator.unlink(missing_ok=True)
                 print(f"  GET from byte {have:,} of {total:,}", flush=True)
                 t0, got = time.monotonic(), 0
                 with part.open(mode) as f:
@@ -87,6 +98,7 @@ def download(url: str, dest: Path, max_mbps: float) -> Path:
     if size != total:
         raise RuntimeError(f"Size mismatch for {url}: {size} != {total}")
     part.replace(dest)
+    validator.unlink(missing_ok=True)
     return dest
 
 

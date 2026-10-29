@@ -3,7 +3,7 @@
 For each scene: GetCapabilities with the scene's rescale (as make_links.py
 builds it), then the tile at the scene centre at zooms 9, 13 and 16 through
 the WMTS template, fetched twice (cold, then warm). Also checks that URLs
-outside the bucket get 403 and a missing object 404.
+outside the bucket get 403, a missing object 404 and oversized tiles 422.
 
 Usage: python check_service.py <BASE_URL> <STATS_TXT> <SCENE> [<SCENE> ...]
 """
@@ -29,13 +29,15 @@ TMS = morecantile.tms.get("WebMercatorQuad")
 
 
 def fetch(url: str):
-    """Status, body, seconds and (case-insensitive) headers of a GET."""
+    """Status, body, seconds and (case-insensitive) headers of a GET; status 0 on network errors."""
     t0 = time.perf_counter()
     try:
         with urllib.request.urlopen(url, timeout=120) as r:
             return r.status, r.read(), time.perf_counter() - t0, r.headers
     except urllib.error.HTTPError as e:
         return e.code, e.read(), time.perf_counter() - t0, e.headers
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+        return 0, str(e).encode(), time.perf_counter() - t0, {}
 
 
 def check_scene(base: str, scene: str, ranges) -> dict:
@@ -43,6 +45,8 @@ def check_scene(base: str, scene: str, ranges) -> dict:
     if status != 200 or "xml" not in headers.get("Content-Type", ""):
         return {"scene": scene, "error": f"capabilities {status}: {body[:200]!r}"}
     layers = ET.fromstring(body).findall(".//w:Contents/w:Layer", NS)
+    if not layers:
+        return {"scene": scene, "error": "capabilities without layers"}
     layer = layers[0]
     lo = [float(v) for v in layer.find("ows:WGS84BoundingBox/ows:LowerCorner", NS).text.split()]
     hi = [float(v) for v in layer.find("ows:WGS84BoundingBox/ows:UpperCorner", NS).text.split()]
@@ -62,6 +66,7 @@ def check_scene(base: str, scene: str, ranges) -> dict:
             result[f"z{z}"] = f"error {[s for s, *_ in runs]}"
         else:
             result[f"z{z}"] = (runs[0][2], runs[1][2], len(runs[1][1]))
+        result["tile_url"] = url  # last zoom; reused by the tile size limit checks
     return result
 
 
@@ -74,13 +79,14 @@ def main() -> None:
     base = args.base_url.rstrip("/")
     stats = read_stats(args.stats)
 
-    cold, warm, ok = [], [], True
+    cold, warm, ok, tile_url = [], [], True, None
     for scene in args.scenes:
         r = check_scene(base, scene, stats[scene])
         if "error" in r:
             print(f"FAIL {scene}: {r['error']}")
             ok = False
             continue
+        tile_url = tile_url or r["tile_url"]
         cells = []
         for z in ZOOMS:
             v = r[f"z{z}"]
@@ -108,8 +114,19 @@ def main() -> None:
         ("https object URL", "https://storage.googleapis.com/" + GS_ROOT[5:] + "/x.tif", 403),
         ("missing object", GS_ROOT + "/v001/999/999/2026/1/missing.tif", 404),
     ]
-    for name, url, expected in guard:
-        status, body, _, _ = fetch(f"{base}/cog/info?url={quote(url, safe='')}")
+    checks = [(name, f"{base}/cog/info?url={quote(url, safe='')}", expected) for name, url, expected in guard]
+    if tile_url:
+        checks += [
+            ("tilesize at limit", tile_url + "&tilesize=1024", 200),
+            ("tilesize above limit", tile_url + "&tilesize=1025", 422),
+            ("buffer above limit", tile_url + "&buffer=64.5", 422),
+            ("padding above limit", tile_url + "&padding=65", 422),
+        ]
+    else:
+        print("FAIL tile size limits: no scene returned a tile")
+        ok = False
+    for name, url, expected in checks:
+        status, body, _, _ = fetch(url)
         good = status == expected
         ok &= good
         print(f"{'OK  ' if good else 'FAIL'} {name}: {status} (expected {expected})")
