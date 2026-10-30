@@ -1,18 +1,21 @@
-"""Copy scenes from INPE to a private bucket as JPEG 85 COGs, one at a time.
+"""Copy scenes from INPE to a private bucket as stretched JPEG 85 COGs, one at a time.
 
-For each scene: download over a single connection, build the RGBA
-intermediate, write the JPEG COG (YCbCr + internal mask), check it, upload
-with `gcloud storage cp`, confirm the object size, write a done marker and
-delete the temporary files. Failures are logged and the batch moves on;
-re-running skips scenes that already have a marker and resumes partial
-downloads.
+For each scene: download over a single connection, pick the per-band linear
+stretch (scene_stats.linear_bounds), write the JPEG COG with an internal
+mask (compress_cog.write_stretched_cog: YCbCr, or RGB for the scenes in
+scenes_rgb.txt), check it, upload with `gcloud storage cp`, confirm the
+object size, write a done marker, update stretch.txt and delete the
+temporary files. Failures are logged and the batch moves on; re-running
+skips scenes that already have a marker and resumes partial downloads.
 
---rgb keeps the JPEG in RGB instead of YCbCr, for the scenes in
-scenes_rgb.txt: their narrow rescale turns YCbCr's small colour errors into
-visible blotches. RGB files are about 2.8x larger (2.4-2.9x over those 19
-scenes).
+Why stretch: the links stretch the dark, narrow raw range 5-6.5x, which
+also stretches JPEG's errors (blocks, and YCbCr colour casts). Stored
+stretched, the links stretch only 1.1-2.8x. The overviews are averaged from
+the raw values before the stretch, so they match the original's; the rescale
+and gamma stay in the links (make_links.py converts the rescale to stored
+values).
 
-Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--rgb] [--limit N] [--max-mbps 20]
+Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--limit N] [--max-mbps 20]
 """
 
 import argparse
@@ -27,15 +30,23 @@ from pathlib import Path
 import rasterio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from compress_cog import GDAL_ENV, write_jpeg_rgb, write_rgba, write_variant  # noqa: E402
+from compress_cog import GDAL_ENV, stretch_intermediates, write_stretched_cog  # noqa: E402
 from fetch_scene import download  # noqa: E402
-from make_links import cog_url, scene_path  # noqa: E402
+from make_links import HERE, STRETCH_TXT, cog_url, read_stats, scene_path  # noqa: E402
+from scene_stats import linear_bounds, stats_line  # noqa: E402
 
-CODEC, QUALITY = "jpeg", 85
+QUALITY = 85
+# Scenes whose copy is JPEG in RGB: on 4096 px crops, YCbCr's 4:2:0 chroma gave
+# them a cast of 4.5-9.4 display levels against 2.3 at most elsewhere (hazy 2026
+# dry-season scenes). RGB copies are about 2.7x the size of YCbCr ones.
+SCENES_RGB_TXT = HERE / "scenes_rgb.txt"
 PAUSE_S = 30  # between scenes, to stay gentle with data.inpe.br
 ATTRIBUTION = "INPE - Brazil Data Cube (CC BY 4.0)"
 # CC BY 4.0 asks to say the material was changed. No commas: gcloud splits on them.
-MODIFICATIONS = "Recompressed from DEFLATE to JPEG quality 85 ({} with internal mask)"
+MODIFICATIONS = (
+    "Stretched linearly per band from linear_stretch (raw low-high) to 0-255 "
+    "and recompressed from DEFLATE to JPEG quality 85 ({} with internal mask)"
+)
 GCLOUD = shutil.which("gcloud")
 log = logging.getLogger("process_all")
 
@@ -65,14 +76,24 @@ def gcloud(*args: str) -> str:
     return subprocess.run([GCLOUD, *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, rgb: bool) -> dict:
+def write_stretch_txt(scenes: list[str], markers: Path) -> None:
+    """Rewrite stretch.txt from the done markers, keeping lines of scenes not in this batch."""
+    table = read_stats(STRETCH_TXT) if STRETCH_TXT.exists() else {}
+    for scene in scenes:
+        marker = markers / f"{scene}.json"
+        if marker.exists():
+            table[scene] = [tuple(pair) for pair in json.loads(marker.read_text())["stretch"]]
+    order = [s for s in (HERE / "scenes_acre.txt").read_text(encoding="utf-8").split() if s in table]
+    order += sorted(s for s in table if s not in order)
+    STRETCH_TXT.write_text("\n".join(stats_line(s, table[s]) for s in order) + "\n", encoding="utf-8")
+
+
+def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, ranges: list[tuple[int, int]], rgb: bool) -> dict:
     url = cog_url(scene)
     src = work / Path(url).name
-    rgba = work / f"{src.stem}_rgba.tif"
-    lossless = work / f"{src.stem}_lossless.tif"
-    out = work / f"{src.stem}_{CODEC}{QUALITY}.tif"
+    out = work / f"{src.stem}_jpeg{QUALITY}.tif"
     uri = object_uri(gs_prefix, scene)
-    for stale in (rgba, lossless, out):  # left over by an interrupted run
+    for stale in (out, *stretch_intermediates(out)):  # left over by an interrupted run
         stale.unlink(missing_ok=True)
 
     timings = {}
@@ -83,19 +104,18 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, rgb: bool) 
 
     t0 = time.monotonic()
     with rasterio.Env(**GDAL_ENV):
-        write_rgba(src, rgba)
-        if rgb:
-            write_jpeg_rgb(rgba, out, QUALITY, lossless)
-        else:
-            write_variant(rgba, out, CODEC, QUALITY)
+        low, high = linear_bounds(src, ranges)
+        write_stretched_cog(src, out, low, high, QUALITY, rgb)
     check_cog(out, rgb)
     timings["compress_s"] = round(time.monotonic() - t0)
 
     t0 = time.monotonic()
+    stretch = "|".join(f"{lo}-{hi}" for lo, hi in zip(low, high))
     modifications = MODIFICATIONS.format("RGB" if rgb else "YCbCr")
     gcloud(
         "storage", "cp", str(out), uri,
-        f"--custom-metadata=source={url},attribution={ATTRIBUTION},modifications={modifications}",
+        f"--custom-metadata=source={url},attribution={ATTRIBUTION},modifications={modifications},"
+        f"linear_stretch={stretch}",
     )
     remote = int(gcloud("storage", "objects", "describe", uri, "--format=value(size)"))
     if remote != out.stat().st_size:
@@ -106,12 +126,13 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, rgb: bool) 
         "scene": scene,
         "source": url,
         "uri": uri,
+        "stretch": [[lo, hi] for lo, hi in zip(low, high)],
         "photometric": "RGB" if rgb else "YCbCr",
         "original_bytes": src.stat().st_size,
         "cog_bytes": out.stat().st_size,
         **timings,
     }
-    for done in (src, rgba, out):
+    for done in (src, out):
         done.unlink(missing_ok=True)
     return result
 
@@ -120,8 +141,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("scenes", type=Path)
     parser.add_argument("work_dir", type=Path)
-    parser.add_argument("gs_prefix", help="e.g. gs://my-bucket")
-    parser.add_argument("--rgb", action="store_true", help="Write RGB JPEG instead of YCbCr (see scenes_rgb.txt)")
+    parser.add_argument("gs_prefix", help="e.g. gs://my-bucket/linear (make_links.GS_PREFIX)")
     parser.add_argument("--limit", type=int, default=0, help="Process at most N pending scenes")
     parser.add_argument("--max-mbps", type=float, default=20, help="Download throughput cap in MB/s (0 = none)")
     args = parser.parse_args()
@@ -137,6 +157,11 @@ def main() -> None:
         sys.exit("gcloud not found on PATH")
 
     scenes = [s.strip() for s in args.scenes.read_text().splitlines() if s.strip()]
+    rgb_scenes = set(SCENES_RGB_TXT.read_text(encoding="utf-8").split()) if SCENES_RGB_TXT.exists() else set()
+    stats = read_stats(HERE / "stats.txt")
+    missing = [s for s in scenes if s not in stats]
+    if missing:
+        sys.exit(f"stats.txt has no ranges for: {', '.join(missing)}")
     pending = [s for s in scenes if not (markers / f"{s}.json").exists()]
     already_done = len(scenes) - len(pending)
     if args.limit:
@@ -147,17 +172,18 @@ def main() -> None:
     for i, scene in enumerate(pending, 1):
         log.info("[%d/%d] %s", i, len(pending), scene)
         try:
-            result = process(scene, args.work_dir, args.gs_prefix, args.max_mbps, args.rgb)
+            result = process(scene, args.work_dir, args.gs_prefix, args.max_mbps, stats[scene], scene in rgb_scenes)
         except Exception as e:  # keep going; the scene is retried on the next run
             detail = e.stderr if isinstance(e, subprocess.CalledProcessError) else e
             log.exception("FAILED %s: %s", scene, detail)
             failed.append(scene)
         else:
             (markers / f"{scene}.json").write_text(json.dumps(result, indent=2))
+            write_stretch_txt(scenes, markers)
             log.info(
-                "OK %s: %.2f GB -> %.3f GB (%.1fx), download %ss, compress %ss, upload %ss",
+                "OK %s: %.2f GB -> %.3f GB (%.1fx, %s), stretch %s, download %ss, compress %ss, upload %ss",
                 scene, result["original_bytes"] / 1e9, result["cog_bytes"] / 1e9,
-                result["original_bytes"] / result["cog_bytes"],
+                result["original_bytes"] / result["cog_bytes"], result["photometric"], result["stretch"],
                 result["download_s"], result["compress_s"], result["upload_s"],
             )
         if i < len(pending):

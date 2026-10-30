@@ -1,9 +1,10 @@
 """Smoke-test the TiTiler service: WMTS capabilities, tiles and the URL guard.
 
 For each scene: GetCapabilities with the scene's rescale and color formula
-(as make_links.py builds it), then the tile at the scene centre at zooms 9, 13 and 16 through
-the WMTS template, fetched twice (cold, then warm). Also checks that URLs
-outside the bucket get 403, a missing object 404 and oversized tiles 422.
+(as make_links.py builds it, with stretch.txt), then the WebP tile at the
+scene centre at zooms 9, 13 and 16 through the WMTS template, fetched twice
+(cold, then warm). Also checks that URLs outside the bucket get 403, a
+missing object 404 and oversized tiles 422.
 
 Usage: python check_service.py <BASE_URL> <STATS_TXT> <SCENE> [<SCENE> ...]
 """
@@ -21,7 +22,7 @@ from urllib.parse import quote
 import morecantile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from make_links import GS_ROOT, cog_url, read_stats, wmts_url  # noqa: E402
+from make_links import GS_ROOT, STRETCH_TXT, cog_url, read_stats, wmts_url  # noqa: E402
 
 NS = {"w": "http://www.opengis.net/wmts/1.0", "ows": "http://www.opengis.net/ows/1.1"}
 ZOOMS = (9, 13, 16)
@@ -40,8 +41,12 @@ def fetch(url: str):
         return 0, str(e).encode(), time.perf_counter() - t0, {}
 
 
-def check_scene(base: str, scene: str, ranges) -> dict:
-    status, body, t_caps, headers = fetch(wmts_url(base, scene, ranges))
+def is_webp(body: bytes) -> bool:
+    return body[:4] == b"RIFF" and body[8:12] == b"WEBP"
+
+
+def check_scene(base: str, scene: str, ranges, stretch) -> dict:
+    status, body, t_caps, headers = fetch(wmts_url(base, scene, ranges, stretch))
     if status != 200 or "xml" not in headers.get("Content-Type", ""):
         return {"scene": scene, "error": f"capabilities {status}: {body[:200]!r}"}
     layers = ET.fromstring(body).findall(".//w:Contents/w:Layer", NS)
@@ -63,7 +68,7 @@ def check_scene(base: str, scene: str, ranges) -> dict:
         t = TMS.tile((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, z)
         url = template.replace("{TileMatrix}", str(z)).replace("{TileCol}", str(t.x)).replace("{TileRow}", str(t.y))
         runs = [fetch(url) for _ in range(2)]
-        if any(s != 200 or b[:4] != b"\x89PNG" for s, b, _, _ in runs):
+        if any(s != 200 or not is_webp(b) for s, b, _, _ in runs):
             result[f"z{z}"] = f"error {[s for s, *_ in runs]}"
         else:
             result[f"z{z}"] = (runs[0][2], runs[1][2], len(runs[1][1]))
@@ -78,12 +83,12 @@ def main() -> None:
     parser.add_argument("scenes", nargs="+")
     args = parser.parse_args()
     base = args.base_url.rstrip("/")
-    stats = read_stats(args.stats)
+    stats, stretch = read_stats(args.stats), read_stats(STRETCH_TXT)
 
     cold, warm, ok, tile_url = [], [], True, None
     scenes = [s.strip() for s in args.scenes]  # $(cat scenes.txt) keeps \r on CRLF checkouts
     for scene in scenes:
-        r = check_scene(base, scene, stats[scene])
+        r = check_scene(base, scene, stats[scene], stretch[scene])
         if "error" in r:
             print(f"FAIL {scene}: {r['error']}")
             ok = False

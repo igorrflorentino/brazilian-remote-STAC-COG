@@ -1,9 +1,11 @@
 """Per-band rescale ranges per scene, written as stats.txt lines.
 
-Line format: YYYYMMDD_path_row:lo-hi|lo-hi|lo-hi.
+Line format: YYYYMMDD_path_row:lo-hi|lo-hi|lo-hi. Ranges are in INPE's raw
+values; the bucket copies are stretched (stretch.txt), so values read through
+the service are mapped back to raw first.
 
 --common (used for the links): one contrast for all scenes, so neighbouring
-scenes match. Reads each bucket copy's raw preview through the service, masks
+scenes match. Reads each bucket copy's preview through the service, masks
 clouds, and measures the scene's dark level (5th percentile of the cloud-free
 pixels). Each scene's offset from the typical dark level (haze and smoke add
 to it, a low sun takes from it) is removed, the 2-99.5 % range of the pooled
@@ -14,6 +16,9 @@ shifted by its own offset. Run it over all scenes together.
 from the INPE originals or from the bucket copies (/cog/statistics), both at
 max_size=256. Percentiles of a scene full of cloud or of uniform forest give
 too wide or too narrow a range, so these are kept for reference only.
+
+linear_bounds gives the per-band stretch that process_all.py bakes into the
+copies (stretch.txt).
 
 Usage:
   python scene_stats.py <SCENES_TXT> <OUT_TXT> --common <BASE_URL>
@@ -32,12 +37,13 @@ from urllib.parse import quote
 
 import numpy as np
 import rasterio
+from rasterio.enums import Resampling
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.io import MemoryFile
 from rio_tiler.io import Reader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from make_links import cog_url, gs_url  # noqa: E402
+from make_links import STRETCH_TXT, cog_url, gs_url, read_stats, to_raw  # noqa: E402
 
 MAX_SIZE = 256
 MIN_WIDTH = 20
@@ -52,6 +58,11 @@ SAMPLE_PX = 150_000  # cloud-free pixels per scene in the pooled range
 # Forest is most of Acre and half the pooled pixels sit within 5 levels of the
 # dark end, so a 98 % top falls inside pasture and clips it.
 POOLED_PCT = (2, 99.5)
+
+# linear_bounds
+STRETCH_PREVIEW = 16  # read the original at 1/16, from its overviews
+STRETCH_PCT = (0.01, 99.99)  # of the cloud-free pixels; brighter clouds saturate
+STRETCH_MARGIN = 2  # levels beyond those values and beyond the link's rescale range
 GDAL_ENV = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
@@ -75,11 +86,14 @@ def from_inpe(scene: str) -> list[tuple[int, int]]:
     return [widen(stats[b].model_dump()["percentile_2"], stats[b].model_dump()["percentile_98"]) for b in ("b1", "b2", "b3")]
 
 
-def from_service(base_url: str, scene: str) -> list[tuple[int, int]]:
+def from_service(base_url: str, scene: str, stretch: list[tuple[int, int]]) -> list[tuple[int, int]]:
     url = f"{base_url}/cog/statistics?url={quote(gs_url(scene), safe='')}&max_size={MAX_SIZE}&p=2&p=98"
     with urllib.request.urlopen(url, timeout=120) as r:
         stats = json.load(r)
-    return [widen(stats[b]["percentile_2"], stats[b]["percentile_98"]) for b in ("b1", "b2", "b3")]
+    return [
+        widen(to_raw(stats[b]["percentile_2"], low, high), to_raw(stats[b]["percentile_98"], low, high))
+        for b, (low, high) in zip(("b1", "b2", "b3"), stretch)
+    ]
 
 
 def grow(mask: np.ndarray, px: int) -> np.ndarray:
@@ -95,7 +109,7 @@ def grow(mask: np.ndarray, px: int) -> np.ndarray:
     return out
 
 
-def clear_pixels(base_url: str, scene: str) -> np.ndarray:
+def clear_pixels(base_url: str, scene: str, stretch: list[tuple[int, int]]) -> np.ndarray:
     """Cloud-free RGB pixels (N x 3, raw values) of the scene's preview."""
     # nearest, as when stats.txt was computed; the service now defaults to bilinear,
     # whose smoothing would narrow the percentiles and shift every range.
@@ -104,17 +118,39 @@ def clear_pixels(base_url: str, scene: str) -> np.ndarray:
         warnings.simplefilter("ignore", NotGeoreferencedWarning)  # a PNG has no geotransform
         with mem.open() as png:
             rgba = png.read()
-    rgb, valid = rgba[:3].transpose(1, 2, 0), rgba[3] > 0
+    stored, valid = rgba[:3].transpose(1, 2, 0), rgba[3] > 0
+    rgb = np.stack([np.round(to_raw(stored[..., b], low, high)) for b, (low, high) in enumerate(stretch)], axis=2)
     darkest = rgb.min(axis=2)
     cloud = valid & (darkest > max(CLOUD_MIN, np.median(darkest[valid]) + CLOUD_ABOVE_GROUND))
     return rgb[valid & ~grow(cloud, CLOUD_GROW_PX)].astype(np.int16)
 
 
+def linear_bounds(src_path: Path, ranges: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
+    """Per-band low/high of the stretch baked into a copy, from the INPE original.
+
+    The cloud-free 0.01 / 99.99 % values, STRETCH_MARGIN levels wider, and never
+    inside the link's rescale range plus the same margin, so every value the
+    link shows survives the stretch; low stays >= 1 as 0 is no data.
+    """
+    with rasterio.open(src_path) as src:
+        shape = (3, src.height // STRETCH_PREVIEW, src.width // STRETCH_PREVIEW)
+        a = src.read(out_shape=shape, resampling=Resampling.nearest)
+    valid = (a != 0).any(axis=0)
+    darkest = a.min(axis=0)
+    cloud = darkest > max(CLOUD_MIN, np.median(darkest[valid]) + CLOUD_ABOVE_GROUND)
+    px = a[:, valid & ~cloud]
+    lo, hi = (np.percentile(px, p, axis=1) for p in STRETCH_PCT)
+    low = [int(max(1, min(v - STRETCH_MARGIN, r[0] - STRETCH_MARGIN))) for v, r in zip(lo, ranges)]
+    high = [int(min(255, max(v + STRETCH_MARGIN, r[1] + STRETCH_MARGIN))) for v, r in zip(hi, ranges)]
+    return low, high
+
+
 def common_ranges(base_url: str, scenes: list[str]) -> dict[str, list[tuple[int, int]]]:
     rng = np.random.default_rng(0)
+    stretch = read_stats(STRETCH_TXT)
     samples, dark = {}, {}
     for scene in scenes:
-        px = clear_pixels(base_url, scene)
+        px = clear_pixels(base_url, scene, stretch[scene])
         dark[scene] = np.percentile(px, 5, axis=0)
         samples[scene] = px[rng.choice(len(px), size=min(len(px), SAMPLE_PX), replace=False)]
         print(f"{scene}: dark level {dark[scene].round().astype(int).tolist()}", flush=True)
@@ -151,8 +187,9 @@ def main() -> None:
         print("\n".join(lines))
         return
     lines = []
+    stretch = {} if args.inpe else read_stats(STRETCH_TXT)
     for scene in scenes:
-        ranges = from_inpe(scene) if args.inpe else from_service(args.service.rstrip("/"), scene)
+        ranges = from_inpe(scene) if args.inpe else from_service(args.service.rstrip("/"), scene, stretch[scene])
         lines.append(stats_line(scene, ranges))
         print(lines[-1], flush=True)
         if args.inpe:

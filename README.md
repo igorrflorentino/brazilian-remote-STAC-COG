@@ -6,14 +6,14 @@ through WMS/WMTS.
 
 `titiler-acre/` is a small [TiTiler](https://developmentseed.org/titiler/) 2.4
 service on Cloud Run. It serves 33 scenes of INPE's `CB4A-WPM-PCA-FUSED`
-collection (Brazil Data Cube), copied as JPEG COGs into a private Cloud Storage
-bucket in the same region as the service.
+collection (Brazil Data Cube), copied as linearly stretched JPEG COGs into a
+private Cloud Storage bucket in the same region as the service.
 
 ```
 data.inpe.br  (DEFLATE COGs, 3-6 GB per scene)
-   |   pipeline/process_all.py: download once, recompress to JPEG 85, upload
+   |   pipeline/process_all.py: download once, stretch, recompress to JPEG 85, upload
    v
-gs://brazilian-remote-stac-cog-cbers4a-wpm  (private, southamerica-east1, ~31 GiB)
+gs://brazilian-remote-stac-cog-cbers4a-wpm  (private, southamerica-east1, ~38 GiB)
    |   /vsigs/ range reads with the service account (storage.objectViewer only)
    v
 Cloud Run "titiler-acre" (app.py)  --WMTS-->  Atlas or any WMTS client
@@ -33,14 +33,15 @@ All paths are relative to `titiler-acre/`.
 | `make_links.py` | Builds the 33 WMTS links into `wmts_links.csv`. The CSV is git-ignored because it holds the service URL. |
 | `scenes.txt` | The 55 candidate scenes (`YYYYMMDD_path_row`): the original 50 plus the 5 clearer dates of [Scene choice](#scene-choice). |
 | `scenes_acre.txt` | The 33 scenes in use, one per path/row cell with valid pixels inside Acre (`pipeline/acre_scenes.py`, `pipeline/acre_scenes.csv`). |
-| `scenes_rgb.txt` | The 24 scenes stored as RGB JPEG (see [Compression](#compression)). |
-| `stats.txt` | Per-band rescale ranges used in the links (see [Rescale ranges](#rescale-ranges)). |
+| `stats.txt` | Per-band rescale ranges used in the links, in INPE's raw values (see [Rescale ranges](#rescale-ranges)). |
+| `stretch.txt` | Per-band linear stretch baked into each copy, raw low-high (see [Compression](#compression)). |
 | `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. |
 | `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre. |
 | `pipeline/fetch_scene.py` | Resumable single-connection download from INPE (If-Range, backoff, throughput cap). |
-| `pipeline/compress_cog.py` | RGBA intermediate and lossy COG variants (`jpeg`, `jpeg_rgb`, `webp`). |
-| `pipeline/process_all.py` | Batch: download, compress, check, upload, one scene at a time. |
-| `pipeline/scene_stats.py` | Writes `stats.txt` lines. |
+| `scenes_rgb.txt` | The 7 scenes whose copy is RGB JPEG instead of YCbCr (see [Compression](#compression)). |
+| `pipeline/compress_cog.py` | `write_stretched_cog`, the pipeline's stretched JPEG COG; also unstretched COG variants (`jpeg`, `jpeg_rgb`, `webp`) from an RGBA intermediate. |
+| `pipeline/process_all.py` | Batch: download, stretch, compress, check, upload, one scene at a time; updates `stretch.txt`. |
+| `pipeline/scene_stats.py` | Writes `stats.txt` lines; `linear_bounds` picks each copy's stretch. |
 | `pipeline/check_service.py` | Smoke test of a deployed service. |
 | `pipeline/compare_quality.py` | Compares codec variants with an original scene. |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
@@ -49,25 +50,29 @@ All paths are relative to `titiler-acre/`.
 ## WMTS links
 
 ```
-<SERVICE_URL>/cog/WMTSCapabilities.xml?url=<COG>&bidx=1&bidx=2&bidx=3&rescale=<lo,hi>&rescale=<lo,hi>&rescale=<lo,hi>&color_formula=gamma%20RGB%201.3
+<SERVICE_URL>/cog/WMTSCapabilities.xml?url=<COG>&bidx=1&bidx=2&bidx=3&rescale=<lo,hi>&rescale=<lo,hi>&rescale=<lo,hi>&color_formula=gamma%20RGB%201.3&tile_format=webp
 ```
 
-- `url` is the URL-encoded bucket path, which keeps INPE's layout (months are
-  not zero-padded):
-  `gs://brazilian-remote-stac-cog-cbers4a-wpm/v001/{path}/{row}/{YYYY}/{M}/CBERS4A_WPM_PCA_RGB321_{YYYYMMDD}_{path}_{row}.tif`
-- `bidx=1&bidx=2&bidx=3` selects the RGB bands, and the three `rescale`
-  values come from `stats.txt`, in band order.
+- `url` is the URL-encoded bucket path, which keeps INPE's layout below the
+  `linear/` prefix (months are not zero-padded):
+  `gs://brazilian-remote-stac-cog-cbers4a-wpm/linear/v001/{path}/{row}/{YYYY}/{M}/CBERS4A_WPM_PCA_RGB321_{YYYYMMDD}_{path}_{row}.tif`
+- `bidx=1&bidx=2&bidx=3` selects the RGB bands. The three `rescale` values
+  are `stats.txt`'s raw ranges converted to the copy's stored values with
+  its `stretch.txt` line, in band order: raw `v` is stored as
+  `(v - low) * 255 / (high - low)`.
 - `color_formula=gamma RGB 1.3` is applied after the rescale. It lifts the
   dark forest without clipping rivers and pasture. TiTiler copies both
   parameters into the tile URL template.
+- `tile_format=webp` asks for lossless WebP tiles (see [Service](#service)).
 - Each document has one layer,
-  `CBERS4A_WPM_PCA_RGB321_{scene}_WebMercatorQuad_default`, with PNG tiles on
+  `CBERS4A_WPM_PCA_RGB321_{scene}_WebMercatorQuad_default`, on
   WebMercatorQuad, zoom 0-24.
 - The links leave out `nodata=0` on purpose: the COGs carry an internal mask,
   and `nodata=0` would bypass it and show JPEG edge noise as a black fringe.
 
-The rescale is part of the URL, so changing `stats.txt` changes the links and
-the WMTS clients have to be pointed at the new ones. To regenerate:
+The rescale is part of the URL, so changing `stats.txt` or `stretch.txt`
+changes the links and the WMTS clients have to be pointed at the new ones. To
+regenerate:
 
 ```bash
 python make_links.py <SERVICE_URL>
@@ -160,8 +165,8 @@ WebMercatorQuad only, plus:
   and a request can still pass `resampling=nearest`.
 - **WebP tiles are lossless:** the same pixels as PNG at 35-55 % of the size,
   for about 35 ms more encoding per tile. rio-tiler's default WebP is lossy
-  (quality 75, 2-6 dB below the PNG). A link opts in with
-  `tile_format=webp`; the current links still ask for PNG.
+  (quality 75, 2-6 dB below the PNG). The scene links ask for
+  `tile_format=webp`; without it, tiles are PNG.
 - **Caching:** `Cache-Control: public, max-age=86400` on successful responses,
   except `/` and `/health`.
 - **CORS:** `*` for GET, because Atlas draws tiles in WebGL.
@@ -171,26 +176,60 @@ WebMercatorQuad only, plus:
 
 ## Compression
 
-The 33 copies in use are JPEG quality 85 with an internal 1-bit mask, 512 px
-blocks and AVERAGE overviews. They differ in colour space:
+The 33 copies in use are JPEG quality 85 COGs with an internal 1-bit mask,
+512 px blocks and AVERAGE overviews: 26 in YCbCr, and the 7 scenes listed in
+`scenes_rgb.txt` in RGB. Each band is stored **linearly stretched**:
 
-- **9 scenes are YCbCr**, the GDAL COG driver's default for 3-band JPEG.
-- **24 scenes are RGB, without chroma subsampling** (`scenes_rgb.txt`). Under
-  a strong stretch, YCbCr's colour errors of 1-2 levels and its small
-  per-band bias show up as 16 px magenta/green blotches at zooms 12-14 and a
-  grey or magenta cast on forest, at any JPEG quality.
-  - 19 of them are clear scenes whose per-scene rescale was as little as 20
-    levels wide.
-  - The other 5 are the clear replacement scenes of
-    [Scene choice](#scene-choice). The common rescale still stretches them
-    5-6.5x.
-  - RGB files are about 2.8x larger than the YCbCr ones (2.4-2.9x).
-  - The COG driver always writes 3-band JPEG as YCbCr, so these scenes go
-    through the GTiff driver with `COPY_SRC_OVERVIEWS`. That gives the same
-    COG layout and the same number of range requests per tile.
+```
+stored = clip(round((raw - low) * 255 / (high - low)), 0, 255)
+```
 
-Each object records `source` (the INPE URL), `attribution` and `modifications`
-in its custom metadata.
+- INPE's raw values are dark and narrow: the links' rescale stretched them
+  4.9-6.5x on screen, and JPEG's errors with them. YCbCr's colour errors of
+  1-2 levels and its small per-band bias showed up as 16 px magenta/green
+  blotches at zooms 12-14 and a grey or magenta cast on forest, at any JPEG
+  quality. Stored stretched, the links stretch only 1.1-2.8x.
+- `low`/`high` per band (`stretch.txt`, and `linear_stretch` in the object
+  metadata) are the cloud-free 0.01 / 99.99 % values of a 1/16 preview of
+  the original, 2 levels wider, and never inside the link's rescale range
+  plus 2 levels (`scene_stats.linear_bounds`). Brighter clouds saturate; every
+  value the link shows survives. `low` stays at least 1, as 0 is no data, and
+  the mask comes from the raw values.
+- **Overviews are averaged from the raw values.**
+  `compress_cog.write_stretched_cog` writes the raw values times 64 as UInt16
+  with AVERAGE overviews, then stretches the full resolution and every
+  overview through a VRT (`ScaleOffset`/`ScaleRatio`) while copying to JPEG.
+  `low` comes from a 1/16 preview, which is smoother than the 2 m pixels, so
+  in hazy scenes 8-12 % of the pixels fall below it. Averaging after the clip
+  at `low` lifted the dark forest of the low zooms by 4-8 levels. Only the 7
+  RGB copies were built this way. The other 26 predate it and still average
+  after the clip, which matters little there: their worst bias in the
+  measurements below is 3.2 levels.
+- The rescale and gamma stay in the links; applying them before JPEG as well
+  washed out the forest texture at zooms 12-14.
+- **RGB for 7 scenes.** In the hazy 2026 dry-season scenes about a third of
+  the pixels sit below the link's black point. Only the positive half of
+  YCbCr's 4:2:0 chroma errors shows there, and the gamma is steepest near
+  black, so they got a red/magenta cast of 4.6-9.0 display levels at every
+  zoom on 4096 px crops, against 3.2 at most in the other scenes. Quality 92
+  does not remove it. RGB JPEG has no chroma subsampling: the cast fell to 0.5
+  levels at most, at about 2.7x the size.
+- Served tiles of those 7 scenes against INPE's originals, YCbCr then RGB:
+  median PSNR at z12 went from 26.8 to 29.9 dB and at z15 from 25.4 to 28.6 dB;
+  the worst band bias at z12 went from 8.3 to 0.6 levels. At z15 it went from
+  5.1 to 3.0 levels; what remains is a darkening of similar size in all three
+  bands, which the earlier unstretched copies show too.
+- On the pilot scene `20250922_236_124`, rendered bilinear and compared with
+  the original, PSNR at z12 / z14 / z16 went from 28.7 / 26.5 / 28.5 dB to
+  32.0 / 30.1 / 33.2 dB. Storing the raw values in RGB JPEG (no chroma
+  subsampling) gave 30.5 / 27.2 / 30.4 dB at 1.8x the size.
+
+Before the stretch, 24 of the copies were raw RGB JPEG to avoid the YCbCr
+blotches. `compress_cog.py`'s command line still writes unstretched variants
+(`jpeg`, `jpeg_rgb`, `webp`), for comparisons.
+
+Each object records `source` (the INPE URL), `attribution`, `modifications`
+and `linear_stretch` in its custom metadata.
 
 ## Coverage
 
@@ -227,14 +266,15 @@ pixels) flags haze and smoke. The cloud-free 2024-08-15 dates of 236/124
 and 236/125 were left out: their dark level is 13-36 levels above the typical
 one, from fire-season smoke.
 
-The 5 copies they replace stay in the bucket, unused.
+The 5 copies they replaced were deleted from the bucket on 2026-10-29.
 
 ## Rescale ranges
 
 All scenes share one contrast, so neighbouring scenes match on the map.
 `pipeline/scene_stats.py --common` computes it from the bucket copies:
 
-1. It reads each scene's raw preview (1024 px, nearest) through the service.
+1. It reads each scene's preview (1024 px, nearest) through the service and
+   maps it back to raw values with `stretch.txt`.
 2. It masks clouds: pixels whose darkest band is above 110 and at least 50
    levels above the scene's median. The mask is grown by about 300 m.
 3. It takes each scene's dark level, the 5th percentile of its cloud-free
@@ -249,7 +289,9 @@ All scenes share one contrast, so neighbouring scenes match on the map.
    about -17 (July scenes) to +76 (blue band of the 2024 smoke scene).
 
 Run it over all scenes at once, and again after adding or recompressing any
-scene; every range depends on the whole set.
+scene; every range depends on the whole set. The copies are stretched to fit
+the current ranges: a new range that reaches past a scene's `stretch.txt`
+values clips there, and that scene has to be rebuilt.
 
 The earlier per-scene 2-98 % ranges (`--service`, `--inpe`) failed both
 ways:
@@ -265,7 +307,8 @@ ways:
 Requirements:
 
 - `gcloud`, authenticated with write access to the bucket;
-- about 15 GB of free disk;
+- about 18 GB of free disk (the original, the UInt16 intermediate with its
+  overviews, about 1.4x the original, and the COG);
 - the pipeline environment:
 
 ```bash
@@ -274,18 +317,19 @@ python -m venv pipeline/.venv
 pipeline/.venv/Scripts/python -m pip install -r pipeline/requirements.txt  # bin/ instead of Scripts/ on Linux/macOS
 ```
 
-Then, with that environment active, run the steps below. Each run skips the
-scenes that already have a done marker in its work directory, so use a
-separate directory for each colour space:
+Then, with that environment active, run the steps below. `process_all.py`
+needs `stats.txt` (each stretch covers the scene's rescale range) and writes
+`stretch.txt`. Each run skips the scenes that already have a done marker in
+its work directory.
 
 ```bash
-grep -vxFf scenes_rgb.txt scenes_acre.txt > scenes_ycbcr.txt
-python pipeline/process_all.py scenes_ycbcr.txt work_ycbcr gs://brazilian-remote-stac-cog-cbers4a-wpm
-python pipeline/process_all.py scenes_rgb.txt work_rgb gs://brazilian-remote-stac-cog-cbers4a-wpm --rgb
-python pipeline/scene_stats.py scenes_acre.txt stats.txt --common <SERVICE_URL>
+python pipeline/process_all.py scenes_acre.txt work gs://brazilian-remote-stac-cog-cbers4a-wpm/linear
 python make_links.py <SERVICE_URL>
 python pipeline/check_service.py <SERVICE_URL> stats.txt $(cat scenes_acre.txt)
 ```
+
+`stats.txt` itself comes from `scene_stats.py --common <SERVICE_URL>`, which
+reads the copies already in the bucket (see [Rescale ranges](#rescale-ranges)).
 
 The background mosaic is built and uploaded on its own:
 
@@ -299,12 +343,12 @@ gcloud storage cp work_s2/MOSAIC-S2-BRAZIL-3M_V1_20250701_20250930_P20250916_ACR
 The clip reads about 3 GB from data.inpe.br (about 20 minutes) and writes a
 0.37 GB COG; `gcloud` splits metadata on commas, so the values have none.
 
-A scene takes about 10-15 minutes:
+A scene takes about 15-25 minutes:
 
-- 3-10 min to download (capped at 20 MB/s by default, to stay gentle with
+- 4-13 min to download (capped at 20 MB/s by default, to stay gentle with
   data.inpe.br);
-- 3-6 min to compress;
-- 1-3 min to upload.
+- 7-9 min to compress;
+- 1-4 min to upload.
 
 Failed scenes are logged and retried on the next run. Partial downloads
 resume.
@@ -335,18 +379,19 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
   until it is recycled (about 15 minutes idle) or a new revision is deployed.
 - **Striping:** the vertical contrast bands in some scenes, such as
   `20261025_237_125`, are already in INPE's originals.
-- **Costs:** storage is the main one: ~31 GiB Standard in
-  southamerica-east1, about US$ 1.10 a month, of which the 5 unused copies
-  are 2.25 GiB. Cloud Run scales to zero and light use stays in the free
-  tier. Reads from the bucket in the same region carry no egress charge. A
-  budget alert watches the project; it notifies, it does not cap spending.
+- **Costs:** storage is the main one: ~38 GiB Standard in
+  southamerica-east1, about US$ 1.35 a month. Cloud Run scales to zero and
+  light use stays in the free tier. Reads from the bucket in the same region
+  carry no egress charge. A budget alert watches the project; it notifies, it
+  does not cap spending.
 
 ## Attribution
 
 Imagery: INPE / Brazil Data Cube, `CB4A-WPM-PCA-FUSED`,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The copies served
-here are recompressed (lossy JPEG quality 85), as recorded in each object's
-metadata and in the service's attribution text.
+here are linearly stretched per band and recompressed (lossy JPEG quality
+85), as recorded in each object's metadata and in the service's attribution
+text.
 
 Background layers:
 

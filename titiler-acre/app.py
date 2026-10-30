@@ -40,7 +40,7 @@ ALLOWED_PREFIX = "gs://brazilian-remote-stac-cog-cbers4a-wpm/"
 # CC BY 4.0 asks to credit the source and to say the material was changed.
 ATTRIBUTION = (
     "CBERS-4A WPM imagery: INPE / Brazil Data Cube (CB4A-WPM-PCA-FUSED, CC BY 4.0), "
-    "recompressed to JPEG quality 85 for this service"
+    "linearly stretched per band and recompressed to JPEG quality 85 for this service"
 )
 
 # Largest output (pixels per side) for preview, bbox, feature and statistics.
@@ -53,7 +53,7 @@ MAX_TILE_SIZE = 1024
 MAX_TILE_BUFFER = 64
 
 # WebP tiles are lossless: the same pixels as PNG at 35-55 % of the size
-# (rio-tiler's default WebP is lossy q75). Links opt in with tile_format=webp.
+# (rio-tiler's default WebP is lossy q75). make_links.py asks for tile_format=webp.
 img_profiles.data["webp"].update(lossless=True)
 
 # GDAL messages meaning the COG is not in the bucket (wrong path or extension).
