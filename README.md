@@ -49,7 +49,7 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/compare_served.py` | Compares the service's tiles with INPE's lossless originals: the measurements in [Compression](#compression). |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
 | `pipeline/hybrid_layers.js` | Browser-console script that builds the [hybrid map layers](#hybrid-map-layers) and uploads them to Atlas. |
-| `pipeline/atlas_refresh.js` | Browser-console script that swaps the Atlas map's WMTS layers for new links and checks them pixel by pixel against the service. |
+| `pipeline/atlas_refresh.js` | Browser-console script that swaps the Atlas map's WMTS layers for new links, files the new scenes into their [folder](#atlas-folders) by date and checks them pixel by pixel against the service. `S.organize()` files every layer into the folders. |
 
 ## WMTS links
 
@@ -109,15 +109,17 @@ with no scene:
   no rescale or gamma. A 2-98 % stretch turns it blue and brings out the
   seams.
 
-In Atlas, keep the background layers at the bottom of the layer list; new
-layers are added at the top. The INPE mosaic sits above EOX and is hidden:
-shown, it covers EOX inside Acre.
+In Atlas the background layers sit in the "Fundo Sentinel-2" folder at the
+bottom of the layer list. The INPE mosaic sits above EOX and is hidden: shown,
+it covers EOX inside Acre. Showing the folder again shows both layers, so hide
+the mosaic again by hand.
 
 ## Hybrid map layers
 
 Twelve vector layers sit above the scenes in the Atlas map, so the imagery
 reads like a hybrid map: roads, rivers, protected areas, deforestation and
-services. Top to bottom, as built on 2026-10-29:
+services. As built on 2026-10-29 (the project now groups them in
+[folders](#atlas-folders)):
 
 | Layer | Source | Features | Style |
 |---|---|---|---|
@@ -145,9 +147,36 @@ services. Top to bottom, as built on 2026-10-29:
 To rebuild, paste `pipeline/hybrid_layers.js` into the browser console of the
 Atlas project and run `HY.run([...])`, `HY.uploadAll([...])` (bottom layer
 first, since uploads land at the top) and `HY.applyStyle(key)` for each layer.
-The styles go through Atlas' internal React state, which is not a public API;
-if that breaks, `HY.STYLES` still documents the colours to set in the Layer
-panel.
+Then paste `pipeline/atlas_refresh.js` and run `await S.organize()` to file the
+new layers into their [folders](#atlas-folders). The styles go through Atlas'
+internal React state, which is not a public API; if that breaks, `HY.STYLES`
+still documents the colours to set in the Layer panel.
+
+### Atlas folders
+
+The project's layers sit in six folders, so that a whole group can be hidden
+or shown at once. Top to bottom:
+
+| Folder | Layers |
+|---|---|
+| Pontos de interesse | Aeródromos, Escolas e saúde |
+| Vias e hidrografia | Estradas e ramais, Ruas urbanas, Rios e igarapés |
+| Desmatamento (INPE) | Alertas DETER, Desmatamento PRODES |
+| Limites e áreas protegidas | Terras Indígenas, Unidades de Conservação, Municípios, Limite do Acre |
+| Imagens CBERS-4A (2 m) | Datas das imagens, then the 33 scenes, newest first |
+| Fundo Sentinel-2 | The INPE mosaic (hidden) and EOX |
+
+- Hiding a folder hides all its layers. Showing it again shows all of them,
+  including the INPE mosaic of "Fundo Sentinel-2", which has to stay hidden.
+- The "Imagens" folder is kept collapsed. Atlas draws no rows for the layers
+  of a collapsed folder, so the scripts open the folders they need
+  (`S.expandAll`, `HY.expand`) and leave them open.
+- New layers land at the top of the list, outside the folders.
+  `atlas_refresh.js` files new scenes into their folder by date, and
+  `await S.organize()` files every layer into its folder. `S.FOLDERS` holds
+  the structure and has to match `HY.NAMES` in `hybrid_layers.js`; `S.organize`
+  is safe to repeat and leaves layers it does not know below the folders.
+- Folders, like the styles, go through Atlas' internal layer store.
 
 ## Service
 

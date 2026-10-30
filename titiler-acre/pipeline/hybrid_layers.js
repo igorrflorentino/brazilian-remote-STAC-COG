@@ -4,6 +4,11 @@
 //   await HY.run(['limite', 'cenas', 'municipios', 'ucs', 'tis', 'prodes', 'deter',
 //                 'rios', 'ruas', 'estradas', 'servicos', 'aerodromos']);
 //   await HY.uploadAll(['limite', 'cenas', 'municipios', ...]);   // bottom layer first
+// Uploads land at the top of the list, outside the project's folders: paste
+// atlas_refresh.js too and run `await S.organize()` to file them (S.FOLDERS holds
+// the structure, keyed by the names in HY.NAMES). HY.expand opens the folders
+// before the steps that read the layer rows, which Atlas does not draw for a
+// collapsed folder.
 // Every source below sends CORS headers, so the page fetches them directly.
 // Overpass queries take 40-60 s each; HY.log shows progress.
 //
@@ -15,6 +20,22 @@ const HY = window.HY;
 HY.sleep = ms => new Promise(r => setTimeout(r, ms));
 HY.say = m => HY.log.push(new Date().toISOString().slice(11, 19) + ' ' + m);
 HY.until = async (fn, ms, what) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { const v = fn(); if (v) return v; await HY.sleep(300); } throw new Error('timeout: ' + what); };
+
+// Opens every folder of the project, through the same Turbopack probe as
+// atlas_refresh.js (not a public API). If it fails, open the folders by hand.
+HY.expand = async () => {
+  try {
+    if (!HY._ads) {
+      const id = 980000000 + Math.floor(Math.random() * 1e6);
+      TURBOPACK.push([`/_next/static/chunks/__hy${id}.js`, id, e => { HY._tp = e; }]);
+      TURBOPACK.push([`/_next/static/chunks/__hy_rt${id}.js`, {otherChunks: [], runtimeModuleIds: [id]}]);
+      await HY.until(() => HY._tp, 5000, 'turbopack probe');
+      HY._ads = HY._tp.i(277257).ActiveDataState;
+    }
+    for (const i of Object.values(HY._ads.state.activeData)) if (i.item_type === 'folder' && !i.expanded) await HY._ads.setFolderExpanded(i.id, true);
+    await HY.sleep(500);
+  } catch (e) { HY.say('could not open the folders (' + e + '); open them by hand'); }
+};
 
 // ---- Geometry: Douglas-Peucker in degrees, coordinates rounded to 5 decimals (~1 m)
 HY.r5 = c => Math.round(c * 1e5) / 1e5;
@@ -130,6 +151,7 @@ HY.build = {
   },
   // Footprints of the scenes in the map, from the layer names "CBERS-4A YYYY-MM-DD ppp/rrr".
   cenas: async () => {
+    await HY.expand();
     const names = [...new Set([...document.querySelectorAll('input')].map(i => i.value).filter(v => /^CBERS-4A \d{4}-\d\d-\d\d \d{3}\/\d{3}$/.test(v)))];
     const feats = [];
     for (const n of names) {
@@ -223,6 +245,7 @@ HY.STYLES = {
 };
 // Select the layer row, then call the style panel's own callbacks: one draws, the other saves.
 HY.applyStyle = async key => {
+  await HY.expand();
   const name = HY.NAMES[key], inp = [...document.querySelectorAll('input')].find(x => x.value === name);
   let row = inp; for (let i = 0; i < 5; i++) row = row.parentElement;
   (row.closest('.legendItem') || row).click(); await HY.sleep(1500);
