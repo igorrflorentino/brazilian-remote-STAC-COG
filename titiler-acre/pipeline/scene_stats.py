@@ -6,7 +6,7 @@ Line format: YYYYMMDD_path_row:lo-hi|lo-hi|lo-hi.
 scenes match. Reads each bucket copy's raw preview through the service, masks
 clouds, and measures the scene's dark level (5th percentile of the cloud-free
 pixels). Each scene's offset from the typical dark level (haze and smoke add
-to it, a low sun takes from it) is removed, the 2-98 % range of the pooled
+to it, a low sun takes from it) is removed, the 2-99.5 % range of the pooled
 cloud-free pixels gives the common range, and each scene gets that range
 shifted by its own offset. Run it over all scenes together.
 
@@ -49,6 +49,9 @@ CLOUD_MIN = 110  # a pixel is cloud if its darkest band is above this...
 CLOUD_ABOVE_GROUND = 50  # ...and this far above the scene's median darkest band
 CLOUD_GROW_PX = 3  # ~300 m at PREVIEW_SIZE, drops the thin cloud at the edges
 SAMPLE_PX = 150_000  # cloud-free pixels per scene in the pooled range
+# Forest is most of Acre and half the pooled pixels sit within 5 levels of the
+# dark end, so a 98 % top falls inside pasture and clips it.
+POOLED_PCT = (2, 99.5)
 GDAL_ENV = {
     "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
     "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif",
@@ -116,7 +119,7 @@ def common_ranges(base_url: str, scenes: list[str]) -> dict[str, list[tuple[int,
     typical = np.median(list(dark.values()), axis=0)
     offset = {s: dark[s] - typical for s in scenes}
     pooled = np.concatenate([samples[s] - offset[s] for s in scenes])
-    lo, hi = np.percentile(pooled, 2, axis=0), np.percentile(pooled, 98, axis=0)
+    lo, hi = (np.percentile(pooled, p, axis=0) for p in POOLED_PCT)
     print(f"common range {list(zip(lo.round().astype(int).tolist(), hi.round().astype(int).tolist()))}", flush=True)
     return {
         s: [(max(0, round(lo[b] + offset[s][b])), min(255, round(hi[b] + offset[s][b]))) for b in range(3)]

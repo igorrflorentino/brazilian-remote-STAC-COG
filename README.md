@@ -13,7 +13,7 @@ bucket in the same region as the service.
 data.inpe.br  (DEFLATE COGs, 3-6 GB per scene)
    |   pipeline/process_all.py: download once, recompress to JPEG 85, upload
    v
-gs://brazilian-remote-stac-cog-cbers4a-wpm  (private, southamerica-east1, ~25 GiB)
+gs://brazilian-remote-stac-cog-cbers4a-wpm  (private, southamerica-east1, ~31 GiB)
    |   /vsigs/ range reads with the service account (storage.objectViewer only)
    v
 Cloud Run "titiler-acre" (app.py)  --WMTS-->  Atlas or any WMTS client
@@ -31,9 +31,9 @@ All paths are relative to `titiler-acre/`.
 | `app.py` | The TiTiler service (see [Service](#service)). |
 | `Dockerfile`, `requirements.txt` | Container: Python 3.11, rasterio 1.4.4, GDAL tuned for range reads. |
 | `make_links.py` | Builds the 33 WMTS links into `wmts_links.csv`. The CSV is git-ignored because it holds the service URL. |
-| `scenes.txt` | The 50 candidate scenes (`YYYYMMDD_path_row`). |
-| `scenes_acre.txt` | The 33 scenes with valid pixels inside Acre, from `pipeline/acre_scenes.py` (`pipeline/acre_scenes.csv`). |
-| `scenes_rgb.txt` | The 19 scenes stored as RGB JPEG (see [Compression](#compression)). |
+| `scenes.txt` | The 55 candidate scenes (`YYYYMMDD_path_row`): the original 50 plus the 5 clearer dates of [Scene choice](#scene-choice). |
+| `scenes_acre.txt` | The 33 scenes in use, one per path/row cell with valid pixels inside Acre (`pipeline/acre_scenes.py`, `pipeline/acre_scenes.csv`). |
+| `scenes_rgb.txt` | The 24 scenes stored as RGB JPEG (see [Compression](#compression)). |
 | `stats.txt` | Per-band rescale ranges used in the links (see [Rescale ranges](#rescale-ranges)). |
 | `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. |
 | `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre. |
@@ -43,6 +43,7 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/scene_stats.py` | Writes `stats.txt` lines. |
 | `pipeline/check_service.py` | Smoke test of a deployed service. |
 | `pipeline/compare_quality.py` | Compares codec variants with an original scene. |
+| `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
 
 ## WMTS links
 
@@ -71,6 +72,37 @@ the WMTS clients have to be pointed at the new ones. To regenerate:
 python make_links.py <SERVICE_URL>
 ```
 
+## Background layers
+
+Two Sentinel-2 layers (10 m) can sit under the scenes, to fill the areas
+with no scene:
+
+- **EOX Sentinel-2 cloudless 2025**, an annual cloud-free mosaic with no
+  visible seams over Acre. It comes straight from EOX's public WMTS,
+  `https://tiles.maps.eox.at/wmts/1.0.0/WMTSCapabilities.xml`, layer
+  `s2cloudless-2025_3857`.
+  - License: [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/),
+    **non-commercial use only**; commercial use needs a license from EOX.
+  - Attribution: "Sentinel-2 cloudless - https://s2maps.eu by EOX IT
+    Services GmbH (Contains modified Copernicus Sentinel data 2025)".
+- **INPE's Sentinel-2 3-month mosaic, July-September 2025**
+  (`mosaic-s2-brazil-3m-1`), clipped to Acre by `pipeline/s2_mosaic.py` and
+  served by this service from the bucket. It shows seams between Sentinel-2
+  tiles and some haze, but its license allows any use with attribution (the
+  Copernicus Sentinel data legal notice). Link:
+
+  ```
+  <SERVICE_URL>/cog/WMTSCapabilities.xml?url=gs%3A%2F%2Fbrazilian-remote-stac-cog-cbers4a-wpm%2Fs2-mosaic%2Fv1%2F2025%2FMOSAIC-S2-BRAZIL-3M_V1_20250701_20250930_ACRE.tif&bidx=1&bidx=2&bidx=3
+  ```
+
+  INPE's `visual` asset is already colour-balanced 8-bit RGB, so the link has
+  no rescale or gamma. A 2-98 % stretch turns it blue and brings out the
+  seams.
+
+In Atlas, keep the background layers at the bottom of the layer list; new
+layers are added at the top. The INPE mosaic sits above EOX and is hidden:
+shown, it covers EOX inside Acre.
+
 ## Service
 
 `app.py` mounts TiTiler's `TilerFactory` on `/cog` with the WMTS extension and
@@ -92,15 +124,19 @@ WebMercatorQuad only, plus:
 
 ## Compression
 
-All 33 copies are JPEG quality 85 with an internal 1-bit mask, 512 px blocks
-and AVERAGE overviews. They differ in colour space:
+The 33 copies in use are JPEG quality 85 with an internal 1-bit mask, 512 px
+blocks and AVERAGE overviews. They differ in colour space:
 
-- **14 scenes are YCbCr**, the GDAL COG driver's default for 3-band JPEG.
-- **19 scenes are RGB, without chroma subsampling** (`scenes_rgb.txt`). Their
-  rescale is narrow, as little as 20 levels stretched to 255. YCbCr's colour
-  errors of 1-2 levels and its small per-band bias then show up as 16 px
-  magenta/green blotches at zooms 12-14 and a grey or magenta cast on forest,
-  at any JPEG quality.
+- **9 scenes are YCbCr**, the GDAL COG driver's default for 3-band JPEG.
+- **24 scenes are RGB, without chroma subsampling** (`scenes_rgb.txt`). Under
+  a strong stretch, YCbCr's colour errors of 1-2 levels and its small
+  per-band bias show up as 16 px magenta/green blotches at zooms 12-14 and a
+  grey or magenta cast on forest, at any JPEG quality.
+  - 19 of them are clear scenes whose per-scene rescale was as little as 20
+    levels wide.
+  - The other 5 are the clear replacement scenes of
+    [Scene choice](#scene-choice). The common rescale still stretches them
+    5-6.5x.
   - RGB files are about 2.8x larger than the YCbCr ones (2.4-2.9x).
   - The COG driver always writes 3-band JPEG as YCbCr, so these scenes go
     through the GTiff driver with `COPY_SRC_OVERVIEWS`. That gives the same
@@ -111,7 +147,7 @@ in its custom metadata.
 
 ## Coverage
 
-The 33 scenes cover about 81 % of Acre (133,300 of 164,165 km²):
+The 33 scenes cover about 83 % of Acre (135,700 of 164,165 km²):
 
 - `CB4A-WPM-PCA-FUSED` has no scene at all for cells 238/124, 239/124,
   241/123, 241/124, 235/126 and 235/127.
@@ -119,6 +155,32 @@ The 33 scenes cover about 81 % of Acre (133,300 of 164,165 km²):
 - The fused collection starts in March 2023. INPE's unfused `CB4A-WPM-L4-DN`
   collection has 2020-2022 scenes for most of the missing cells, as separate
   pan and multispectral bands.
+
+A Sentinel-2 layer under the scenes fills these areas (see
+[Background layers](#background-layers)). It cannot show through clouds:
+cloud pixels are valid data and cover it.
+
+## Scene choice
+
+The fused collection has up to 13 dates per cell over Acre (316 scenes). Five
+cells now use a clearer date than the one first picked:
+
+| Cell | Was | Now | Inside Acre |
+|---|---|---|---|
+| 232/125 | 2025-09-11, 8 % cloud, hazy | 2025-08-11, clear | 1,088 km² |
+| 233/126 | 2026-05-12, 16 % cloud | 2025-11-07, clear, slight haze | 7,165 km² (was 5,903) |
+| 237/123 | 2025-08-17, 28 % cloud | 2023-07-04, 1 % cloud | 5,517 km² |
+| 241/122 | 2025-09-28, 6 % cumulus | 2025-08-28, clear | 3,070 km² |
+| 242/123 | 2025-08-23, 6 % cloud | 2023-07-10, 3 % cloud | 389 km² (was 52) |
+
+The candidates were screened on the STAC thumbnails, then measured inside
+Acre on overviews of INPE's originals, with the cloud rule of
+`scene_stats.py --common`. The dark level (5th percentile of the cloud-free
+pixels) flags haze and smoke. The cloud-free 2024-08-15 dates of 236/124
+and 236/125 were left out: their dark level is 13-36 levels above the typical
+one, from fire-season smoke.
+
+The 5 copies they replace stay in the bucket, unused.
 
 ## Rescale ranges
 
@@ -131,10 +193,13 @@ All scenes share one contrast, so neighbouring scenes match on the map.
 3. It takes each scene's dark level, the 5th percentile of its cloud-free
    pixels. Smoke and haze raise it; a low sun (July) lowers it.
 4. It removes each scene's offset from the median dark level and takes the
-   2-98 % range of the pooled cloud-free pixels. That gives the common range,
-   about 39-90 / 53-94 / 71-115.
+   2-99.5 % range of the pooled cloud-free pixels. That gives the common
+   range, about 39-91 / 52-91 / 70-112.
+   - Forest is most of Acre: half the pooled pixels sit within 5 levels of
+     the dark end. A 98 % top (79 / 79 / 97) falls inside pasture and
+     clips it to white.
 5. Each scene's range is the common one shifted by its own offset, from
-   about -18 (July scenes) to +75 (blue band of the 2024 smoke scene).
+   about -17 (July scenes) to +76 (blue band of the 2024 smoke scene).
 
 Run it over all scenes at once, and again after adding or recompressing any
 scene; every range depends on the whole set.
@@ -175,6 +240,18 @@ python make_links.py <SERVICE_URL>
 python pipeline/check_service.py <SERVICE_URL> stats.txt $(cat scenes_acre.txt)
 ```
 
+The background mosaic is built and uploaded on its own:
+
+```bash
+python pipeline/s2_mosaic.py MOSAIC-S2-BRAZIL-3M_V1_20250701_20250930_P20250916 work_s2
+gcloud storage cp work_s2/MOSAIC-S2-BRAZIL-3M_V1_20250701_20250930_P20250916_ACRE.tif \
+  gs://brazilian-remote-stac-cog-cbers4a-wpm/s2-mosaic/v1/2025/MOSAIC-S2-BRAZIL-3M_V1_20250701_20250930_ACRE.tif \
+  "--custom-metadata=source=https://data.inpe.br/bdc/data/s2/s2-3m/v1/2025/MOSAIC-S2-BRAZIL-3M_V1_20250701_20250930_P20250916_VISUAL.tif,attribution=INPE - Brazil Data Cube / contains modified Copernicus Sentinel data 2025,modifications=Clipped to Acre and recompressed to JPEG quality 85 (YCbCr with internal mask)"
+```
+
+The clip reads about 3 GB from data.inpe.br (about 20 minutes) and writes a
+0.37 GB COG; `gcloud` splits metadata on commas, so the values have none.
+
 A scene takes about 10-15 minutes:
 
 - 3-10 min to download (capped at 20 MB/s by default, to stay gentle with
@@ -211,10 +288,11 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
   until it is recycled (about 15 minutes idle) or a new revision is deployed.
 - **Striping:** the vertical contrast bands in some scenes, such as
   `20261025_237_125`, are already in INPE's originals.
-- **Costs:** storage (~25 GiB Standard in southamerica-east1, under US$ 1 a
-  month) is the main one. Cloud Run scales to zero and light use stays in the
-  free tier. Reads from the bucket in the same region carry no egress charge.
-  A budget alert watches the project; it notifies, it does not cap spending.
+- **Costs:** storage is the main one: ~31 GiB Standard in
+  southamerica-east1, about US$ 1.10 a month, of which the 5 unused copies
+  are 2.25 GiB. Cloud Run scales to zero and light use stays in the free
+  tier. Reads from the bucket in the same region carry no egress charge. A
+  budget alert watches the project; it notifies, it does not cap spending.
 
 ## Attribution
 
@@ -222,3 +300,12 @@ Imagery: INPE / Brazil Data Cube, `CB4A-WPM-PCA-FUSED`,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The copies served
 here are recompressed (lossy JPEG quality 85), as recorded in each object's
 metadata and in the service's attribution text.
+
+Background layers:
+
+- INPE / Brazil Data Cube, `mosaic-s2-brazil-3m-1`, contains modified
+  Copernicus Sentinel data 2025. The copy here is clipped to Acre and
+  recompressed.
+- Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains
+  modified Copernicus Sentinel data 2025),
+  [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
