@@ -1,10 +1,12 @@
-"""Compare lossy COG variants with the original scene as TiTiler renders them.
+"""Compare lossy COG variants with the original scene as the service renders them.
 
-Tiles are WebMercatorQuad 256 px read with rio-tiler using TiTiler's
+The variants must hold raw values, as compress_cog.py's command line writes
+them; for the stretched copies in the bucket see compare_served.py. Tiles are
+WebMercatorQuad 256 px read with rio-tiler, bilinear like the service's
 defaults. Reports file sizes, PSNR/SSIM on interior tiles at zooms 12/14/16
-(raw and after the scene's 2-98 % rescale), checks border tiles for lost
-transparency or dark fringes (with the internal mask and with nodata=0), and
-writes side-by-side PNGs over a magenta background.
+(raw and after the scene's own 2-98 % rescale, not the links' common one),
+checks border tiles for lost transparency or dark fringes (with the internal
+mask and with nodata=0), and writes side-by-side PNGs over a magenta background.
 
 Usage: python compare_quality.py <ORIGINAL_TIF> <OUT_DIR> label=path [label=path ...]
 """
@@ -37,7 +39,7 @@ MAGENTA = np.array([255, 0, 255], dtype=np.uint8)
 
 
 def rescale_ranges(src: Reader) -> list[tuple[int, int]]:
-    """Per-band 2-98 % ranges, rounded and widened exactly as scene_stats.py writes them for the links."""
+    """Per-band 2-98 % ranges, rounded and widened as scene_stats.py --inpe does."""
     stats = src.statistics(max_size=MAX_SIZE, percentiles=[2, 98], indexes=(1, 2, 3))
     return [widen(stats[b].model_dump()["percentile_2"], stats[b].model_dump()["percentile_98"]) for b in ("b1", "b2", "b3")]
 
@@ -53,7 +55,8 @@ def to_rgb(img, ranges=None) -> np.ndarray:
 
 def read_tile(src: Reader, tile, nodata=None):
     kwargs = {"nodata": nodata} if nodata is not None else {}
-    return src.tile(tile.x, tile.y, tile.z, tilesize=256, indexes=(1, 2, 3), **kwargs)
+    return src.tile(tile.x, tile.y, tile.z, tilesize=256, indexes=(1, 2, 3),
+                    resampling_method="bilinear", reproject_method="bilinear", **kwargs)
 
 
 def sample_tiles(src: Reader, bounds, zoom: int, rng: random.Random):

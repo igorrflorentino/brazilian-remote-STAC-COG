@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 wmts_links.csv
 pipeline/
+work*/

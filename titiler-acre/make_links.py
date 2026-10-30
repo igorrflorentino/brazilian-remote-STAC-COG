@@ -62,8 +62,12 @@ def to_stored(raw: float, low: int, high: int) -> float:
 
 
 def to_raw(stored: float, low: int, high: int) -> float:
-    """Value in the stretched copy -> raw value (inverse of to_stored)."""
-    return low + stored * (high - low) / 255
+    """Value in the stretched copy -> raw value (inverse of to_stored).
+
+    The scale is computed first: NumPy 2 keeps uint8 * int as uint8, so
+    stored * (high - low) would wrap around on a uint8 array.
+    """
+    return low + stored * ((high - low) / 255)
 
 
 def read_stats(path: Path) -> dict[str, list[tuple[int, int]]]:

@@ -1,10 +1,10 @@
 """Smoke-test the TiTiler service: WMTS capabilities, tiles and the URL guard.
 
-For each scene: GetCapabilities with the scene's rescale and color formula
-(as make_links.py builds it, with stretch.txt), then the WebP tile at the
-scene centre at zooms 9, 13 and 16 through the WMTS template, fetched twice
-(cold, then warm). Also checks that URLs outside the bucket get 403, a
-missing object 404 and oversized tiles 422.
+For each scene: a sanity check of its rescale ranges, GetCapabilities with
+the scene's rescale and color formula (as make_links.py builds it, with
+stretch.txt), then the WebP tile at the scene centre at zooms 9, 13 and 16
+through the WMTS template, fetched twice (cold, then warm). Also checks that
+URLs outside the bucket get 403, a missing object 404 and oversized tiles 422.
 
 Usage: python check_service.py <BASE_URL> <STATS_TXT> <SCENE> [<SCENE> ...]
 """
@@ -17,12 +17,13 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import morecantile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from make_links import GS_ROOT, STRETCH_TXT, cog_url, read_stats, wmts_url  # noqa: E402
+from scene_stats import MIN_WIDTH  # noqa: E402
 
 NS = {"w": "http://www.opengis.net/wmts/1.0", "ows": "http://www.opengis.net/ows/1.1"}
 ZOOMS = (9, 13, 16)
@@ -45,8 +46,27 @@ def is_webp(body: bytes) -> bool:
     return body[:4] == b"RIFF" and body[8:12] == b"WEBP"
 
 
+def rescale_of(url: str) -> list[str]:
+    return parse_qs(urlsplit(url).query).get("rescale", [])
+
+
+def range_problems(ranges, stretch) -> list[str]:
+    """What is wrong with a scene's rescale ranges (raw values) given its copy's stretch."""
+    problems = []
+    for band, ((lo, hi), (low, high)) in enumerate(zip(ranges, stretch), start=1):
+        if hi - lo < MIN_WIDTH:
+            problems.append(f"band {band} range {lo}-{hi} is narrower than {MIN_WIDTH} levels")
+        if lo < low or hi > high:
+            problems.append(f"band {band} range {lo}-{hi} reaches outside the stretch {low}-{high}")
+    return problems
+
+
 def check_scene(base: str, scene: str, ranges, stretch) -> dict:
-    status, body, t_caps, headers = fetch(wmts_url(base, scene, ranges, stretch))
+    problems = range_problems(ranges, stretch)
+    if problems:
+        return {"scene": scene, "error": "; ".join(problems)}
+    caps_url = wmts_url(base, scene, ranges, stretch)
+    status, body, t_caps, headers = fetch(caps_url)
     if status != 200 or "xml" not in headers.get("Content-Type", ""):
         return {"scene": scene, "error": f"capabilities {status}: {body[:200]!r}"}
     layers = ET.fromstring(body).findall(".//w:Contents/w:Layer", NS)
@@ -61,7 +81,7 @@ def check_scene(base: str, scene: str, ranges, stretch) -> dict:
         "layers": len(layers),
         "caps_s": t_caps,
         "template_https": template.startswith("https://") or base.startswith("http://127."),
-        "template_rescale": template.count("rescale="),
+        "template_rescale": len(rescale_of(template)) == 3 and rescale_of(template) == rescale_of(caps_url),
         "template_color": "color_formula=" in template,
     }
     for z in ZOOMS:
@@ -104,7 +124,7 @@ def main() -> None:
                 cold.append(v[0])
                 warm.append(v[1])
                 cells.append(f"z{z} cold {v[0]:.2f}s warm {v[1]:.2f}s {v[2] // 1024}KB")
-        ok &= r["layers"] == 1 and r["template_https"] and r["template_rescale"] == 3 and r["template_color"]
+        ok &= r["layers"] == 1 and r["template_https"] and r["template_rescale"] and r["template_color"]
         print(
             f"{scene}: caps {r['caps_s']:.2f}s layers={r['layers']} https={r['template_https']} "
             f"rescale={r['template_rescale']} color={r['template_color']} | " + " | ".join(cells)

@@ -29,23 +29,26 @@ All paths are relative to `titiler-acre/`.
 | File | Purpose |
 |---|---|
 | `app.py` | The TiTiler service (see [Service](#service)). |
-| `Dockerfile`, `requirements.txt` | Container: Python 3.11, rasterio 1.4.4, GDAL tuned for range reads. |
+| `Dockerfile`, `requirements.txt` | Container: Python 3.11, rasterio 1.4.4, GDAL tuned for range reads. The base image and every package are pinned (see [Deploy](#deploy)). |
 | `make_links.py` | Builds the 33 WMTS links into `wmts_links.csv`. The CSV is git-ignored because it holds the service URL. |
 | `scenes.txt` | The 55 candidate scenes (`YYYYMMDD_path_row`): the original 50 plus the 5 clearer dates of [Scene choice](#scene-choice). |
 | `scenes_acre.txt` | The 33 scenes in use, one per path/row cell with valid pixels inside Acre (`pipeline/acre_scenes.py`, `pipeline/acre_scenes.csv`). |
 | `stats.txt` | Per-band rescale ranges used in the links, in INPE's raw values (see [Rescale ranges](#rescale-ranges)). |
 | `stretch.txt` | Per-band linear stretch baked into each copy, raw low-high (see [Compression](#compression)). |
-| `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. |
+| `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. It predates [Scene choice](#scene-choice): it still has the 5 replaced scenes and not the 5 that replaced them. |
 | `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre. |
 | `pipeline/fetch_scene.py` | Resumable single-connection download from INPE (If-Range, backoff, throughput cap). |
 | `scenes_rgb.txt` | The 7 scenes whose copy is RGB JPEG instead of YCbCr (see [Compression](#compression)). |
 | `pipeline/compress_cog.py` | `write_stretched_cog`, the pipeline's stretched JPEG COG; also unstretched COG variants (`jpeg`, `jpeg_rgb`, `webp`) from an RGBA intermediate. |
 | `pipeline/process_all.py` | Batch: download, stretch, compress, check, upload, one scene at a time; updates `stretch.txt`. |
 | `pipeline/scene_stats.py` | Writes `stats.txt` lines; `linear_bounds` picks each copy's stretch. |
-| `pipeline/check_service.py` | Smoke test of a deployed service. |
-| `pipeline/compare_quality.py` | Compares codec variants with an original scene. |
+| `pipeline/check_service.py` | Smoke test of a deployed service, including each scene's rescale ranges. |
+| `pipeline/test_pipeline.py` | Offline tests: stretch arithmetic, `stats.txt` and `stretch.txt`, download resume, upload retries. Run with `python -m unittest discover -s pipeline`. |
+| `pipeline/compare_quality.py` | Compares unstretched codec variants with an original scene, on local files. |
+| `pipeline/compare_served.py` | Compares the service's tiles with INPE's lossless originals: the measurements in [Compression](#compression). |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
 | `pipeline/hybrid_layers.js` | Browser-console script that builds the [hybrid map layers](#hybrid-map-layers) and uploads them to Atlas. |
+| `pipeline/atlas_refresh.js` | Browser-console script that swaps the Atlas map's WMTS layers for new links and checks them pixel by pixel against the service. |
 
 ## WMTS links
 
@@ -66,7 +69,7 @@ All paths are relative to `titiler-acre/`.
 - `tile_format=webp` asks for lossless WebP tiles (see [Service](#service)).
 - Each document has one layer,
   `CBERS4A_WPM_PCA_RGB321_{scene}_WebMercatorQuad_default`, on
-  WebMercatorQuad, zoom 0-24.
+  WebMercatorQuad, limited to zooms 8-16, the range the COGs cover.
 - The links leave out `nodata=0` on purpose: the COGs carry an internal mask,
   and `nodata=0` would bypass it and show JPEG edge noise as a black fringe.
 
@@ -254,10 +257,10 @@ cells now use a clearer date than the one first picked:
 | Cell | Was | Now | Inside Acre |
 |---|---|---|---|
 | 232/125 | 2025-09-11, 8 % cloud, hazy | 2025-08-11, clear | 1,088 km² |
-| 233/126 | 2026-05-12, 16 % cloud | 2025-11-07, clear, slight haze | 7,165 km² (was 5,903) |
+| 233/126 | 2026-05-12, 16 % cloud | 2025-11-07, clear, slight haze | 7,165 km² (was 5,812) |
 | 237/123 | 2025-08-17, 28 % cloud | 2023-07-04, 1 % cloud | 5,517 km² |
 | 241/122 | 2025-09-28, 6 % cumulus | 2025-08-28, clear | 3,070 km² |
-| 242/123 | 2025-08-23, 6 % cloud | 2023-07-10, 3 % cloud | 389 km² (was 52) |
+| 242/123 | 2025-08-23, 6 % cloud | 2023-07-10, 3 % cloud | 389 km² (was 41) |
 
 The candidates were screened on the STAC thumbnails, then measured inside
 Acre on overviews of INPE's originals, with the cloud rule of
@@ -350,8 +353,9 @@ A scene takes about 15-25 minutes:
 - 7-9 min to compress;
 - 1-4 min to upload.
 
-Failed scenes are logged and retried on the next run. Partial downloads
-resume.
+`gcloud` calls are retried for about 5 minutes, so a network blip does not
+cost a recompression. Failed scenes are logged and retried on the next run.
+Partial downloads resume.
 
 ## Deploy
 
@@ -363,7 +367,11 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
 ```
 
 - `--source .` builds the `Dockerfile` with Cloud Build. `.gcloudignore`
-  keeps `.venv/`, `pipeline/` and `wmts_links.csv` out of the upload.
+  keeps `.venv/`, `pipeline/`, `work*/` and `wmts_links.csv` out of the upload.
+- The base image digest and `requirements.txt` hold what was installed in the
+  image tested on 2026-10-30, so a rebuild gets the same packages. Update them
+  on purpose, for example for a security patch, then run
+  `pipeline/check_service.py` against the new revision.
 - The service account needs only `roles/storage.objectViewer` on the bucket.
 
 ## Operations

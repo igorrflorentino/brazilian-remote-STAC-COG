@@ -159,6 +159,8 @@ def common_ranges(base_url: str, scenes: list[str]) -> dict[str, list[tuple[int,
     pooled = np.concatenate([samples[s] - offset[s] for s in scenes])
     lo, hi = (np.percentile(pooled, p, axis=0) for p in POOLED_PCT)
     print(f"common range {list(zip(lo.round().astype(int).tolist(), hi.round().astype(int).tolist()))}", flush=True)
+    if (hi - lo < MIN_WIDTH).any():  # never overwrite stats.txt with a degenerate contrast
+        sys.exit(f"Common range narrower than {MIN_WIDTH} levels, stats not written")
     return {
         s: [(max(0, round(lo[b] + offset[s][b])), min(255, round(hi[b] + offset[s][b]))) for b in range(3)]
         for s in scenes

@@ -1,10 +1,9 @@
 """Write lossy COG variants of an RGB CBERS-4A scene where 0 = no data.
 
 Step 1 writes a tiled RGBA GeoTIFF whose alpha marks valid pixels (any band
-!= 0), optionally mapping the RGB values through a lookup table such as
-linear_lut's stretch. Step 2 lets the GDAL COG driver (as in gdal_translate
--of COG) write each variant from it: JPEG turns the alpha into an internal
-1-bit mask and uses YCbCr, WEBP keeps the alpha channel. Overviews use AVERAGE.
+!= 0). Step 2 lets the GDAL COG driver (as in gdal_translate -of COG) write
+each variant from it: JPEG turns the alpha into an internal 1-bit mask and
+uses YCbCr, WEBP keeps the alpha channel. Overviews use AVERAGE.
 
 jpeg_rgb is JPEG without YCbCr, for scenes with a narrow rescale: the COG
 driver always writes 3-band JPEG as YCbCr, so it goes through the GTiff
@@ -33,20 +32,8 @@ GDAL_ENV = {"GDAL_CACHEMAX": 1024, "GDAL_NUM_THREADS": "ALL_CPUS"}
 RAW16_SCALE = 64  # raw x 64 in UInt16: the averaged overviews keep 6 bits of fraction
 
 
-def linear_lut(low: list[int], high: list[int]) -> np.ndarray:
-    """3 x 256 table stretching each band linearly from low-high to 0-255, clipped."""
-    values = np.arange(256, dtype=float)
-    return np.stack(
-        [np.clip(np.round((values - lo) * 255 / (hi - lo)), 0, 255) for lo, hi in zip(low, high)]
-    ).astype("uint8")
-
-
-def write_rgba(src_path: Path, rgba_path: Path, lut: np.ndarray | None = None) -> None:
-    """Copy RGB to a tiled RGBA GeoTIFF with alpha = 255 where any band != 0.
-
-    lut (3 x 256), if given, maps the RGB values; the alpha still comes from
-    the raw values, so a valid pixel stretched to 0 keeps its alpha.
-    """
+def write_rgba(src_path: Path, rgba_path: Path) -> None:
+    """Copy RGB to a tiled RGBA GeoTIFF with alpha = 255 where any band != 0."""
     with rasterio.open(src_path) as src:
         profile = src.profile
         profile.update(
@@ -71,8 +58,6 @@ def write_rgba(src_path: Path, rgba_path: Path, lut: np.ndarray | None = None) -
                 window = Window(0, row, src.width, min(STRIP_ROWS, src.height - row))
                 rgb = src.read(window=window)
                 alpha = np.where((rgb != 0).any(axis=0), 255, 0).astype("uint8")
-                if lut is not None:
-                    rgb = np.stack([lut[b][rgb[b]] for b in range(3)])
                 dst.write(rgb, indexes=[1, 2, 3], window=window)
                 dst.write(alpha, indexes=4, window=window)
 

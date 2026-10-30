@@ -78,8 +78,17 @@ def download(url: str, dest: Path, max_mbps: float) -> Path:
                 print(f"  received {got / 1e9:.2f} GB at {rate:.1f} MB/s", flush=True)
             attempt = 0
         except urllib.error.HTTPError as e:
-            if e.code == 416 and total is not None:
-                break
+            if e.code == 416 and have:
+                # Nothing past the end of .part: it is complete (a run stopped
+                # before the rename) or longer than the file upstream.
+                reported = e.headers.get("Content-Range", "").rsplit("/", 1)[-1]
+                e.close()
+                if reported.isdigit() and int(reported) == have:
+                    total = have
+                    break
+                part.unlink()
+                validator.unlink(missing_ok=True)
+                continue
             if e.code not in RETRY_STATUS or attempt >= MAX_RETRIES:
                 raise
             wait = backoff(attempt, e.headers.get("Retry-After"))

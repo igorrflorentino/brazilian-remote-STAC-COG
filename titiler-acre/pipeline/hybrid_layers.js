@@ -3,7 +3,7 @@
 // Paste into the browser console of the Atlas project page (app.atlas.co), then:
 //   await HY.run(['limite', 'cenas', 'municipios', 'ucs', 'tis', 'prodes', 'deter',
 //                 'rios', 'ruas', 'estradas', 'servicos', 'aerodromos']);
-//   await HY.uploadAll(['cenas', 'municipios', ...]);   // bottom layer first
+//   await HY.uploadAll(['limite', 'cenas', 'municipios', ...]);   // bottom layer first
 // Every source below sends CORS headers, so the page fetches them directly.
 // Overpass queries take 40-60 s each; HY.log shows progress.
 //

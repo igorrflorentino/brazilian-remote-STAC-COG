@@ -31,21 +31,22 @@ import rasterio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from compress_cog import GDAL_ENV, stretch_intermediates, write_stretched_cog  # noqa: E402
-from fetch_scene import download  # noqa: E402
+from fetch_scene import backoff, download  # noqa: E402
 from make_links import HERE, STRETCH_TXT, cog_url, read_stats, scene_path  # noqa: E402
 from scene_stats import linear_bounds, stats_line  # noqa: E402
 
 QUALITY = 85
 # Scenes whose copy is JPEG in RGB: on 4096 px crops, YCbCr's 4:2:0 chroma gave
-# them a cast of 4.5-9.4 display levels against 2.3 at most elsewhere (hazy 2026
+# them a cast of 4.6-9.0 display levels against 3.2 at most elsewhere (hazy 2026
 # dry-season scenes). RGB copies are about 2.7x the size of YCbCr ones.
 SCENES_RGB_TXT = HERE / "scenes_rgb.txt"
 PAUSE_S = 30  # between scenes, to stay gentle with data.inpe.br
+GCLOUD_RETRIES = 6  # about 5 minutes in all; a failed upload costs a recompression otherwise
 ATTRIBUTION = "INPE - Brazil Data Cube (CC BY 4.0)"
 # CC BY 4.0 asks to say the material was changed. No commas: gcloud splits on them.
 MODIFICATIONS = (
     "Stretched linearly per band from linear_stretch (raw low-high) to 0-255 "
-    "and recompressed from DEFLATE to JPEG quality 85 ({} with internal mask)"
+    f"and recompressed from DEFLATE to JPEG quality {QUALITY} ({{}} with internal mask)"
 )
 GCLOUD = shutil.which("gcloud")
 log = logging.getLogger("process_all")
@@ -73,7 +74,16 @@ def check_cog(path: Path, rgb: bool) -> None:
 
 
 def gcloud(*args: str) -> str:
-    return subprocess.run([GCLOUD, *args], check=True, capture_output=True, text=True).stdout.strip()
+    """Run gcloud, retrying failures such as DNS blips; both uses are safe to repeat."""
+    for attempt in range(GCLOUD_RETRIES):
+        try:
+            return subprocess.run([GCLOUD, *args], check=True, capture_output=True, text=True).stdout.strip()
+        except subprocess.CalledProcessError as e:
+            if attempt == GCLOUD_RETRIES - 1:
+                raise
+            wait = backoff(attempt)
+            log.warning("gcloud %s failed, retry %d in %.0fs: %s", args[1], attempt + 1, wait, e.stderr.strip()[-300:])
+            time.sleep(wait)
 
 
 def write_stretch_txt(scenes: list[str], markers: Path) -> None:

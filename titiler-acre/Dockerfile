@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+# python:3.11-slim as of the image tested on 2026-10-30, so a rebuild starts from
+# the same base. Update the digest on purpose, to pick up security patches.
+FROM python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
