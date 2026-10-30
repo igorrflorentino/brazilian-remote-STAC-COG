@@ -97,7 +97,9 @@ def grow(mask: np.ndarray, px: int) -> np.ndarray:
 
 def clear_pixels(base_url: str, scene: str) -> np.ndarray:
     """Cloud-free RGB pixels (N x 3, raw values) of the scene's preview."""
-    url = f"{base_url}/cog/preview.png?url={quote(gs_url(scene), safe='')}&bidx=1&bidx=2&bidx=3&max_size={PREVIEW_SIZE}"
+    # nearest, as when stats.txt was computed; the service now defaults to bilinear,
+    # whose smoothing would narrow the percentiles and shift every range.
+    url = f"{base_url}/cog/preview.png?url={quote(gs_url(scene), safe='')}&bidx=1&bidx=2&bidx=3&max_size={PREVIEW_SIZE}&resampling=nearest"
     with urllib.request.urlopen(url, timeout=180) as r, MemoryFile(r.read()) as mem, warnings.catch_warnings():
         warnings.simplefilter("ignore", NotGeoreferencedWarning)  # a PNG has no geotransform
         with mem.open() as png:

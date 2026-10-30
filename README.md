@@ -115,6 +115,16 @@ WebMercatorQuad only, plus:
   - preview, bbox, feature and statistics outputs up to 2048 px per side;
   - `tilesize` up to 1024;
   - `buffer` and `padding` up to 64.
+- **Resampling:** `resampling` and `reproject` default to `bilinear` instead
+  of nearest. Tiles rarely fall on the 2 m grid (z16 is about 2.36 m over
+  Acre), and nearest drops or repeats source pixels. Against an
+  area-averaged reference, bilinear came out 0.8 / 1.8 / 6.5 dB closer at
+  z12 / z14 / z16, for about 0.05 s more per tile. The links do not change,
+  and a request can still pass `resampling=nearest`.
+- **WebP tiles are lossless:** the same pixels as PNG at 35-55 % of the size,
+  for about 35 ms more encoding per tile. rio-tiler's default WebP is lossy
+  (quality 75, 2-6 dB below the PNG). A link opts in with
+  `tile_format=webp`; the current links still ask for PNG.
 - **Caching:** `Cache-Control: public, max-age=86400` on successful responses,
   except `/` and `/health`.
 - **CORS:** `*` for GET, because Atlas draws tiles in WebGL.
@@ -187,7 +197,7 @@ The 5 copies they replace stay in the bucket, unused.
 All scenes share one contrast, so neighbouring scenes match on the map.
 `pipeline/scene_stats.py --common` computes it from the bucket copies:
 
-1. It reads each scene's raw preview (1024 px) through the service.
+1. It reads each scene's raw preview (1024 px, nearest) through the service.
 2. It masks clouds: pixels whose darkest band is above 110 and at least 50
    levels above the scene's median. The mask is grown by about 300 m.
 3. It takes each scene's dark level, the 5th percentile of its cloud-free
