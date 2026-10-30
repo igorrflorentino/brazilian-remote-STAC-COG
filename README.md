@@ -44,6 +44,7 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/check_service.py` | Smoke test of a deployed service. |
 | `pipeline/compare_quality.py` | Compares codec variants with an original scene. |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
+| `pipeline/hybrid_layers.js` | Browser-console script that builds the [hybrid map layers](#hybrid-map-layers) and uploads them to Atlas. |
 
 ## WMTS links
 
@@ -102,6 +103,42 @@ with no scene:
 In Atlas, keep the background layers at the bottom of the layer list; new
 layers are added at the top. The INPE mosaic sits above EOX and is hidden:
 shown, it covers EOX inside Acre.
+
+## Hybrid map layers
+
+Twelve vector layers sit above the scenes in the Atlas map, so the imagery
+reads like a hybrid map: roads, rivers, protected areas, deforestation and
+services. Top to bottom, as built on 2026-10-29:
+
+| Layer | Source | Features | Style |
+|---|---|---|---|
+| Aeródromos (ANAC) | MInfra/ANAC public and private aerodromes (INDE WFS) | 15 | magenta (public) or purple (private) dots, name and ICAO code |
+| Escolas e saúde (OSM) | OpenStreetMap `amenity` school, hospital, clinic, doctors | 471 | blue, red and orange dots from zoom 12; only health units are labelled |
+| Estradas e ramais (OSM) | OpenStreetMap `highway` motorway to tertiary, unclassified, track | 8,739 | by type: BR red, AC orange, other roads yellow, vicinal beige, ramal tan; road number or name |
+| Ruas urbanas (OSM) | OpenStreetMap `highway` residential, living_street | 10,856 | thin white lines with names, from zoom 12 |
+| Rios e igarapés (OSM) | OpenStreetMap `waterway` river, stream | 2,348 | blue, rivers wider; names along the line |
+| Alertas DETER, últimos 12 meses (INPE) | TerraBrasilis `deter-amz:deter_amz`, `uf='AC'`, since 2025-10-29 | 1,625 | outline and 30 % fill by class (clear-cut red, degradation yellow, selective logging pink, ...) |
+| Desmatamento PRODES 2016-2025 (INPE) | TerraBrasilis `prodes-legal-amz:yearly_deforestation`, `state='AC'` | 55,395 | 55 % fill by year, pale yellow (2016) to magenta (2025) |
+| Terras Indígenas (FUNAI via INPE) | TerraBrasilis `indigenous_area_legal_amazon`, intersecting Acre | 32 | orange outline, "TI" name |
+| Unidades de Conservação (MMA/CNUC) | MMA CNUC 07/2026 (INDE WFS), plus the state Resex do Rio Gregório from TerraBrasilis | 16 | dashed green outline by group (strict protection or sustainable use), name |
+| Municípios (IBGE via INPE) | TerraBrasilis `municipalities_legal_amazon`, codes `12*` | 22 | dashed white outline, name |
+| Datas das imagens CBERS-4A | footprints from INPE's STAC (`CB4A-WPM-PCA-FUSED-1`) | 33 | dotted outline with the scene date, up to zoom 9.5 |
+| Limite do Acre | TerraBrasilis `states_legal_amazon`, `sigla='AC'` | 1 | white outline |
+
+- Geometries are simplified with Douglas-Peucker (0.00003-0.0001°, 3-11 m)
+  and rounded to 5 decimals. Attributes are reduced to a few Portuguese fields,
+  which Atlas shows in the click popup.
+- Atlas renders its basemap labels (towns, villages) above every user layer,
+  so the map has no separate places layer.
+- DETER and PRODES are snapshots. To refresh them, rebuild and upload those
+  layers with `pipeline/hybrid_layers.js`, then delete the old ones.
+
+To rebuild, paste `pipeline/hybrid_layers.js` into the browser console of the
+Atlas project and run `HY.run([...])`, `HY.uploadAll([...])` (bottom layer
+first, since uploads land at the top) and `HY.applyStyle(key)` for each layer.
+The styles go through Atlas' internal React state, which is not a public API;
+if that breaks, `HY.STYLES` still documents the colours to set in the Layer
+panel.
 
 ## Service
 
@@ -319,3 +356,15 @@ Background layers:
 - Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains
   modified Copernicus Sentinel data 2025),
   [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+
+Hybrid map layers:
+
+- © OpenStreetMap contributors,
+  [ODbL](https://opendatacommons.org/licenses/odbl/): roads, streets, rivers,
+  schools and health units.
+- INPE, PRODES and DETER, via TerraBrasilis; indigenous lands (FUNAI) and
+  municipal and state boundaries (IBGE) as published by TerraBrasilis.
+- Ministério do Meio Ambiente, Cadastro Nacional de Unidades de Conservação
+  (CNUC), July 2026.
+- Ministério da Infraestrutura / ANAC, registered public and private
+  aerodromes.
