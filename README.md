@@ -177,6 +177,15 @@ or shown at once. Top to bottom:
   the structure and has to match `HY.NAMES` in `hybrid_layers.js`; `S.organize`
   is safe to repeat and leaves layers it does not know below the folders.
 - Folders, like the styles, go through Atlas' internal layer store.
+- The project opens on the Acre view: it is the map origin (project menu, "Set
+  map origin", which also sets the project's cover image).
+- The credits on the map ([Attribution](#attribution)) are four stacked Atlas
+  text elements south of Acre, one line each, and show only while that spot is
+  on screen (the initial view does). A text element has a single line: Enter
+  inside it starts editing the geometry of its box instead of adding a line.
+  Its size is fixed at the zoom it was created at (44.8 px there) and scales
+  with the map zoom, so they were created at zoom 8 to read at 11.2 px in the
+  zoom-6 initial view. The colour starts black; set it to `#ffffff`.
 
 ## Service
 
