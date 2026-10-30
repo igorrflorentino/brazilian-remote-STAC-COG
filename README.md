@@ -31,12 +31,13 @@ All paths are relative to `titiler-acre/`.
 | `app.py` | The TiTiler service (see [Service](#service)). |
 | `Dockerfile`, `requirements.txt` | Container: Python 3.11, rasterio 1.4.4, GDAL tuned for range reads. The base image and every package are pinned (see [Deploy](#deploy)). |
 | `make_links.py` | Builds the 33 WMTS links into `wmts_links.csv`. The CSV is git-ignored because it holds the service URL. |
-| `scenes.txt` | The 55 candidate scenes (`YYYYMMDD_path_row`): the original 50 plus the 5 clearer dates of [Scene choice](#scene-choice). |
+| `scenes.txt` | The 57 candidate scenes (`YYYYMMDD_path_row`): the original 50, the 5 clearer dates of [Scene choice](#scene-choice) and the 2 dates that replaced [defective scenes](#defective-fused-scenes). |
 | `scenes_acre.txt` | The 33 scenes in use, one per path/row cell with valid pixels inside Acre (`pipeline/acre_scenes.py`, `pipeline/acre_scenes.csv`). |
 | `stats.txt` | Per-band rescale ranges used in the links, in INPE's raw values (see [Rescale ranges](#rescale-ranges)). |
 | `stretch.txt` | Per-band linear stretch baked into each copy, raw low-high (see [Compression](#compression)). |
 | `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. It predates [Scene choice](#scene-choice): it still has the 5 replaced scenes and not the 5 that replaced them. |
 | `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre. |
+| `pipeline/check_bands.py` | Checks a scene's fused bands against INPE's unfused bands of the same pass; it flags the defective red band of [20251107_233_126](#defective-fused-scenes). Run it on every candidate scene. |
 | `pipeline/fetch_scene.py` | Resumable single-connection download from INPE (If-Range, backoff, throughput cap). |
 | `scenes_rgb.txt` | The 7 scenes whose copy is RGB JPEG instead of YCbCr (see [Compression](#compression)). |
 | `pipeline/compress_cog.py` | `write_stretched_cog`, the pipeline's stretched JPEG COG; also unstretched COG variants (`jpeg`, `jpeg_rgb`, `webp`) from an RGBA intermediate. |
@@ -236,7 +237,7 @@ and `linear_stretch` in its custom metadata.
 
 ## Coverage
 
-The 33 scenes cover about 83 % of Acre (135,700 of 164,165 km²):
+The 33 scenes cover about 82 % of Acre (134,700 of 164,165 km²):
 
 - `CB4A-WPM-PCA-FUSED` has no scene at all for cells 238/124, 239/124,
   241/123, 241/124, 235/126 and 235/127.
@@ -251,13 +252,16 @@ cloud pixels are valid data and cover it.
 
 ## Scene choice
 
-The fused collection has up to 13 dates per cell over Acre (316 scenes). Five
-cells now use a clearer date than the one first picked:
+The fused collection has up to 13 dates per cell over Acre (316 scenes). Seven
+cells now use a different date than the one first picked: five for a clearer
+sky, two because the first date's colours are wrong (see
+[Defective fused scenes](#defective-fused-scenes)):
 
 | Cell | Was | Now | Inside Acre |
 |---|---|---|---|
 | 232/125 | 2025-09-11, 8 % cloud, hazy | 2025-08-11, clear | 1,088 km² |
-| 233/126 | 2026-05-12, 16 % cloud | 2025-11-07, clear, slight haze | 7,165 km² (was 5,812) |
+| 233/125 | 2025-11-07, tinted | 2025-07-06, 1 % cloud | 3,851 km² (was 4,701) |
+| 233/126 | 2026-05-12, 16 % cloud | 2025-08-06, 7 % cloud | 6,664 km² (was 5,812) |
 | 237/123 | 2025-08-17, 28 % cloud | 2023-07-04, 1 % cloud | 5,517 km² |
 | 241/122 | 2025-09-28, 6 % cumulus | 2025-08-28, clear | 3,070 km² |
 | 242/123 | 2025-08-23, 6 % cloud | 2023-07-10, 3 % cloud | 389 km² (was 41) |
@@ -267,9 +271,59 @@ Acre on overviews of INPE's originals, with the cloud rule of
 `scene_stats.py --common`. The dark level (5th percentile of the cloud-free
 pixels) flags haze and smoke. The cloud-free 2024-08-15 dates of 236/124
 and 236/125 were left out: their dark level is 13-36 levels above the typical
-one, from fire-season smoke.
+one, from fire-season smoke. Since 2026-10-30 every candidate also goes
+through `pipeline/check_bands.py` (below), and its image is rendered with its
+own link contrast before it is picked.
 
-The 5 copies they replaced were deleted from the bucket on 2026-10-29.
+The 5 copies replaced on 2026-10-29 were deleted from the bucket.
+
+### Defective fused scenes
+
+INPE's PCA fusion is not always right. In `20251107_233_126`, the scene that
+covers Rio Branco, the red band of the fused file has no relation to the real
+red. Bright surfaces come out with little red and look blue (roofs turn cyan),
+dark ones come out red (the river is orange, forest purple, pasture neon
+green), and the links' 4.9-6.5x stretch of the raw values turns the band's
+colour fringes into rainbow edges around every building. The scene had been picked for its clear
+sky: the screening above looks at cloud and dark level, not at the bands.
+
+Measured with `pipeline/check_bands.py` against INPE's unfused
+`CB4A-WPM-L4-DN` collection, which keeps blue, green and red apart at 8 m:
+
+- Fused red against the unfused red: correlation 0.22 over 10 sampled
+  windows, against 0.64 for green and 0.44 for blue. In the unfused bands
+  blue, green and red correlate 0.88-0.97 with each other.
+- The red band of the other dates of cell 233/126 correlates 0.8-0.99, except
+  the smoky 2024-07-30 (0.67).
+- `gap`, how far the red correlation trails the mean of green and blue, is
+  0.32 for 233/126. Of 49 scene dates measured over Acre, 45 have 0.05 or
+  less. Haze lowers all three bands alike and leaves the gap alone.
+- No rescale fixes it: one fitted to Sentinel-2 over Rio Branco corrected the
+  overall tone, but the noise and the cyan roofs stayed.
+
+The other scene of the same pass, `20251107_233_125`, is borderline: gap 0.11
+(red 0.68, green 0.86, blue 0.73) and a teal cast with cyan blotches that its
+other dates do not have. It was replaced too, at the cost of 850 km² inside
+Acre, which the Sentinel-2 background now fills. Between a gap of 0.08 and 0.25
+`check_bands.py` says "check the image": two other dates sit there, one smoky
+and one natural-looking, so only the image settles it.
+
+The replacements were measured with `check_bands.py`, the cloud rule, the dark
+level and the km² inside Acre, and rendered with their own link contrast:
+
+- **233/126:** 2025-08-06 (7 % cloud, sharp city, natural colours). 2025-07-06
+  has 0 % cloud by the rule, but haze washes out the city; 2026-05-12 has
+  16 % cloud; 2025-05-05, 2024-10-31, 2024-05-29 and 2023-06-23 have 25-31 %.
+- **233/125:** 2025-07-06 (1 % cloud; fused bands match the unfused ones,
+  0.95-0.97). 2023-07-24 covers 340 km² more, but is two years older and
+  matches the unfused bands worse (0.51-0.70); 2024-07-30 is smoke-brown; the
+  others have 36-44 % cloud.
+
+Check a new candidate before it enters `scenes_acre.txt`:
+
+```bash
+python pipeline/check_bands.py 20250806_233_126
+```
 
 ## Rescale ranges
 
@@ -295,6 +349,14 @@ Run it over all scenes at once, and again after adding or recompressing any
 scene; every range depends on the whole set. The copies are stretched to fit
 the current ranges: a new range that reaches past a scene's `stretch.txt`
 values clips there, and that scene has to be rebuilt.
+
+The 2 scenes of [Defective fused scenes](#defective-fused-scenes), added on
+2026-10-30, did not go through a new `--common` run: it would shift every
+scene's range by a level or two, and with it every link and every Atlas layer.
+Their ranges are the common one of the other 31 scenes (39-91 / 51-90 /
+69-111, recovered from `stats.txt`) shifted by their own offset from the
+typical dark level (40 / 52 / 70), as in steps 3-5. The next full run folds
+them in.
 
 The earlier per-scene 2-98 % ranges (`--service`, `--inpe`) failed both
 ways:

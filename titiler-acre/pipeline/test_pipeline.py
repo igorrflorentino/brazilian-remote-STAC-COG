@@ -18,6 +18,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import make_links  # noqa: E402
 import process_all  # noqa: E402
+from check_bands import all_valid, band_correlations, red_gap, verdict  # noqa: E402
 from check_service import range_problems, rescale_of  # noqa: E402
 from fetch_scene import download  # noqa: E402
 from make_links import HERE, STRETCH_TXT, read_stats, to_raw, to_stored, wmts_url  # noqa: E402
@@ -82,6 +83,35 @@ class RangeProblems(unittest.TestCase):
 
     def test_flags_a_range_outside_the_stretch(self):
         self.assertEqual(len(range_problems([(30, 90), (30, 90), (30, 90)], [(40, 200), (1, 200), (1, 80)])), 2)
+
+
+class CheckBands(unittest.TestCase):
+    def setUp(self):
+        self.rng = np.random.default_rng(0)
+        self.unfused = self.rng.normal(size=(3, 20000))
+
+    def gap(self, fused):
+        return red_gap(band_correlations(fused, self.unfused))
+
+    def test_matching_bands_are_ok(self):
+        self.assertEqual(verdict(self.gap(self.unfused * 2 + 5)), "ok")
+
+    def test_an_unrelated_red_band_is_defective(self):  # what 20251107_233_126 looks like
+        fused = self.unfused.copy()
+        fused[0] = self.rng.normal(size=20000)
+        self.assertEqual(verdict(self.gap(fused)), "defective")
+
+    def test_haze_noise_on_all_bands_leaves_the_gap(self):
+        fused = self.unfused + self.rng.normal(scale=1.5, size=self.unfused.shape)
+        self.assertEqual(verdict(self.gap(fused)), "ok")
+
+    def test_all_valid_keeps_only_whole_blocks(self):
+        mask = np.ones((6, 7), bool)
+        mask[2, 3] = False
+        out = all_valid(mask, 3)
+        self.assertFalse(out[1:4, 2:5].any())  # every 3 x 3 block touching the hole
+        self.assertTrue(out[1, 1] and out[4, 5])
+        self.assertFalse(out[0].any() or out[-1].any() or out[:, 0].any() or out[:, -1].any())  # edges
 
 
 class Download(unittest.TestCase):
