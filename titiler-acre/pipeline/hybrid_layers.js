@@ -150,13 +150,17 @@ HY.build = {
       return c && {type: 'Feature', properties: {categoria: cat[e.tags.amenity], nome: e.tags.name || ''}, geometry: {type: 'Point', coordinates: c.map(HY.r5)}}; }).filter(Boolean)};
   },
   // Footprints of the scenes in the map, from the layer names "CBERS-4A YYYY-MM-DD ppp/rrr".
+  // The scenes of scenes_pansharpened.txt have no fused item: their footprint is the unfused one's.
   cenas: async () => {
     await HY.expand();
     const names = [...new Set([...document.querySelectorAll('input')].map(i => i.value).filter(v => /^CBERS-4A \d{4}-\d\d-\d\d \d{3}\/\d{3}$/.test(v)))];
     const feats = [];
+    const stac = 'https://data.inpe.br/bdc/stac/v1/collections/';
     for (const n of names) {
       const [, y, m, d, path, row] = n.match(/(\d{4})-(\d\d)-(\d\d) (\d{3})\/(\d{3})/);
-      const it = await (await fetch(`https://data.inpe.br/bdc/stac/v1/collections/CB4A-WPM-PCA-FUSED-1/items/CBERS4A_WPM_PCA_RGB321_${y}${m}${d}_${path}_${row}`)).json();
+      let r = await fetch(`${stac}CB4A-WPM-PCA-FUSED-1/items/CBERS4A_WPM_PCA_RGB321_${y}${m}${d}_${path}_${row}`);
+      if (!r.ok) r = await fetch(`${stac}CB4A-WPM-L4-DN-1/items/CBERS_4A_WPM_${y}${m}${d}_${path}_${row}_L4`);
+      const it = await r.json();
       feats.push({type: 'Feature', properties: {data: `${y}-${m}-${d}`, orbita_ponto: `${path}/${row}`, camada: n}, geometry: HY.geom(it.geometry, 0.0001)});
     }
     return {type: 'FeatureCollection', features: feats.filter(f => f.geometry)};

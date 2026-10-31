@@ -5,7 +5,12 @@ footprint is vectorised from the COG's smallest overview mask (a few HTTP
 range requests per scene) and intersected with the IBGE boundary in the
 scene's UTM CRS.
 
-Usage: python acre_scenes.py <SCENES_TXT> <OUT_CSV>
+With --unfused the scenes are read from the colour band of their L4 DN item,
+for scenes with no fused original (pansharpen_scene.py). That file has no
+overviews or mask: its zeros are read at 1/16, about 130 m, which is as exact
+as the overview mask of the others for an area figure.
+
+Usage: python acre_scenes.py <SCENES_TXT> <OUT_CSV> [--unfused]
 """
 
 import argparse
@@ -18,6 +23,8 @@ import urllib.request
 from pathlib import Path
 
 import rasterio
+from affine import Affine
+from rasterio.enums import Resampling
 from rasterio.features import shapes
 from rasterio.warp import transform_geom
 from shapely.geometry import shape
@@ -25,6 +32,7 @@ from shapely.ops import unary_union
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from make_links import cog_url  # noqa: E402
+from pansharpen_scene import band_urls  # noqa: E402
 
 IBGE_ACRE = (
     "https://servicodados.ibge.gov.br/api/v3/malhas/estados/12"
@@ -38,6 +46,7 @@ GDAL_ENV = {
     "GDAL_HTTP_RETRY_DELAY": 5,
 }
 PAUSE_S = 2  # between scenes, to stay well below INPE's rate limit
+UNFUSED_DECIMATION = 16
 
 
 def acre_geometry() -> dict:
@@ -50,9 +59,15 @@ def acre_geometry() -> dict:
 
 
 def valid_footprint(url: str):
-    """Valid-data polygon (scene CRS) from the smallest overview mask."""
+    """Valid-data polygon (scene CRS) from the smallest overview mask, or from the zeros read at 1/16 if there is none."""
     with rasterio.open(url) as ds:
         level = len(ds.overviews(1)) - 1
+        if level < 0:
+            shape_ = (ds.height // UNFUSED_DECIMATION, ds.width // UNFUSED_DECIMATION)
+            mask = (ds.read(1, out_shape=shape_, resampling=Resampling.nearest) != 0).astype("uint8")
+            transform = ds.transform * Affine.scale(ds.width / shape_[1], ds.height / shape_[0])
+            polys = [shape(g) for g, _ in shapes(mask, mask=mask > 0, transform=transform)]
+            return unary_union(polys).buffer(0), ds.crs
     with rasterio.open(url, overview_level=level) as ds:
         mask = ds.dataset_mask()
         polys = [shape(g) for g, _ in shapes(mask, mask=mask > 0, transform=ds.transform)]
@@ -63,6 +78,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("scenes", type=Path)
     parser.add_argument("out_csv", type=Path)
+    parser.add_argument("--unfused", action="store_true", help="Scenes with no fused original: read their L4 DN red band")
     args = parser.parse_args()
 
     scenes = [s.strip() for s in args.scenes.read_text().splitlines() if s.strip()]
@@ -70,7 +86,7 @@ def main() -> None:
     rows = []
     with rasterio.Env(**GDAL_ENV):
         for scene in scenes:
-            footprint, crs = valid_footprint(cog_url(scene))
+            footprint, crs = valid_footprint(band_urls(scene)[3] if args.unfused else cog_url(scene))
             acre_local = shape(transform_geom(IBGE_CRS, crs, acre))
             inside = footprint.intersection(acre_local).area
             rows.append(

@@ -15,6 +15,11 @@ the raw values before the stretch, so they match the original's; the rescale
 and gamma stay in the links (make_links.py converts the rescale to stored
 values).
 
+The scenes in scenes_pansharpened.txt have no fused original: their copy is
+built from INPE's L4 DN bands (pansharpen_scene.py), their stats.txt line is
+computed from that file (scene_stats.preview_ranges) and added once the scene
+is done, and the object's metadata names the L4 item as the source.
+
 Usage: python process_all.py <SCENES_TXT> <WORK_DIR> <GS_PREFIX> [--limit N] [--max-mbps 20]
 """
 
@@ -32,14 +37,18 @@ import rasterio
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from compress_cog import GDAL_ENV, stretch_intermediates, write_stretched_cog  # noqa: E402
 from fetch_scene import backoff, download  # noqa: E402
-from make_links import HERE, STRETCH_TXT, cog_url, read_stats, scene_path  # noqa: E402
-from scene_stats import linear_bounds, stats_line  # noqa: E402
+from make_links import HERE, STRETCH_TXT, SCENE_RE, cog_url, read_stats, scene_path  # noqa: E402
+from pansharpen_scene import GAIN, STAC_ITEM, build as pansharpen  # noqa: E402
+from scene_stats import linear_bounds, preview_ranges, stats_line  # noqa: E402
 
 QUALITY = 85
 # Scenes whose copy is JPEG in RGB: on 4096 px crops, YCbCr's 4:2:0 chroma gave
 # them a cast of 4.6-9.0 display levels against 3.2 at most elsewhere (hazy 2026
 # dry-season scenes). RGB copies are about 2.7x the size of YCbCr ones.
 SCENES_RGB_TXT = HERE / "scenes_rgb.txt"
+# Scenes of cells with no usable fused scene, built from the unfused bands.
+SCENES_PANSHARPENED_TXT = HERE / "scenes_pansharpened.txt"
+STATS_TXT = HERE / "stats.txt"
 PAUSE_S = 30  # between scenes, to stay gentle with data.inpe.br
 GCLOUD_RETRIES = 6  # about 5 minutes in all; a failed upload costs a recompression otherwise
 ATTRIBUTION = "INPE - Brazil Data Cube (CC BY 4.0)"
@@ -47,6 +56,10 @@ ATTRIBUTION = "INPE - Brazil Data Cube (CC BY 4.0)"
 MODIFICATIONS = (
     "Stretched linearly per band from linear_stretch (raw low-high) to 0-255 "
     f"and recompressed from DEFLATE to JPEG quality {QUALITY} ({{}} with internal mask)"
+)
+PANSHARPENED_MODIFICATIONS = (
+    f"Pansharpened from the L4 DN pan and colour bands with SFIM (DN x {GAIN}) then stretched linearly per band "
+    f"from linear_stretch (raw low-high) to 0-255 and recompressed from DEFLATE to JPEG quality {QUALITY} ({{}} with internal mask)"
 )
 GCLOUD = shutil.which("gcloud")
 log = logging.getLogger("process_all")
@@ -98,9 +111,25 @@ def write_stretch_txt(scenes: list[str], markers: Path) -> None:
     STRETCH_TXT.write_text("\n".join(stats_line(s, table[s]) for s in order) + "\n", encoding="utf-8")
 
 
-def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, ranges: list[tuple[int, int]], rgb: bool) -> dict:
-    url = cog_url(scene)
-    src = work / Path(url).name
+def write_stats_txt(scenes: list[str], markers: Path) -> None:
+    """Add to stats.txt the ranges that pansharpened scenes computed from their own pixels."""
+    table = read_stats(STATS_TXT)
+    for scene in scenes:
+        marker = markers / f"{scene}.json"
+        if marker.exists() and "ranges" in (done := json.loads(marker.read_text())):
+            table[scene] = [tuple(pair) for pair in done["ranges"]]
+    order = [s for s in (HERE / "scenes_acre.txt").read_text(encoding="utf-8").split() if s in table]
+    order += sorted(s for s in table if s not in order)
+    STATS_TXT.write_text("\n".join(stats_line(s, table[s]) for s in order) + "\n", encoding="utf-8")
+
+
+def process(
+    scene: str, work: Path, gs_prefix: str, max_mbps: float, ranges: list[tuple[int, int]] | None, rgb: bool,
+    pansharpened: bool = False,
+) -> dict:
+    m = SCENE_RE.match(scene)
+    url = STAC_ITEM.format(date=m["date"], path=m["path"], row=m["row"]) if pansharpened else cog_url(scene)
+    src = work / Path(cog_url(scene)).name  # the pansharpened file takes the fused one's name, as the rest of the pipeline expects
     out = work / f"{src.stem}_jpeg{QUALITY}.tif"
     uri = object_uri(gs_prefix, scene)
     for stale in (out, *stretch_intermediates(out)):  # left over by an interrupted run
@@ -109,11 +138,16 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, ranges: lis
     timings = {}
     t0 = time.monotonic()
     if not src.exists():
-        download(url, src, max_mbps)
+        if pansharpened:
+            pansharpen(scene, src, work, max_mbps)
+        else:
+            download(url, src, max_mbps)
     timings["download_s"] = round(time.monotonic() - t0)
 
     t0 = time.monotonic()
     with rasterio.Env(**GDAL_ENV):
+        if pansharpened:
+            ranges = preview_ranges(src)
         low, high = linear_bounds(src, ranges)
         write_stretched_cog(src, out, low, high, QUALITY, rgb)
     check_cog(out, rgb)
@@ -121,7 +155,7 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, ranges: lis
 
     t0 = time.monotonic()
     stretch = "|".join(f"{lo}-{hi}" for lo, hi in zip(low, high))
-    modifications = MODIFICATIONS.format("RGB" if rgb else "YCbCr")
+    modifications = (PANSHARPENED_MODIFICATIONS if pansharpened else MODIFICATIONS).format("RGB" if rgb else "YCbCr")
     gcloud(
         "storage", "cp", str(out), uri,
         f"--custom-metadata=source={url},attribution={ATTRIBUTION},modifications={modifications},"
@@ -138,6 +172,7 @@ def process(scene: str, work: Path, gs_prefix: str, max_mbps: float, ranges: lis
         "uri": uri,
         "stretch": [[lo, hi] for lo, hi in zip(low, high)],
         "photometric": "RGB" if rgb else "YCbCr",
+        **({"ranges": [[lo, hi] for lo, hi in ranges]} if pansharpened else {}),
         "original_bytes": src.stat().st_size,
         "cog_bytes": out.stat().st_size,
         **timings,
@@ -168,8 +203,9 @@ def main() -> None:
 
     scenes = [s.strip() for s in args.scenes.read_text().splitlines() if s.strip()]
     rgb_scenes = set(SCENES_RGB_TXT.read_text(encoding="utf-8").split()) if SCENES_RGB_TXT.exists() else set()
-    stats = read_stats(HERE / "stats.txt")
-    missing = [s for s in scenes if s not in stats]
+    pansharpened = set(SCENES_PANSHARPENED_TXT.read_text(encoding="utf-8").split()) if SCENES_PANSHARPENED_TXT.exists() else set()
+    stats = read_stats(STATS_TXT)
+    missing = [s for s in scenes if s not in stats and s not in pansharpened]
     if missing:
         sys.exit(f"stats.txt has no ranges for: {', '.join(missing)}")
     pending = [s for s in scenes if not (markers / f"{s}.json").exists()]
@@ -182,7 +218,9 @@ def main() -> None:
     for i, scene in enumerate(pending, 1):
         log.info("[%d/%d] %s", i, len(pending), scene)
         try:
-            result = process(scene, args.work_dir, args.gs_prefix, args.max_mbps, stats[scene], scene in rgb_scenes)
+            result = process(
+                scene, args.work_dir, args.gs_prefix, args.max_mbps, stats.get(scene), scene in rgb_scenes, scene in pansharpened,
+            )
         except Exception as e:  # keep going; the scene is retried on the next run
             detail = e.stderr if isinstance(e, subprocess.CalledProcessError) else e
             log.exception("FAILED %s: %s", scene, detail)
@@ -190,6 +228,8 @@ def main() -> None:
         else:
             (markers / f"{scene}.json").write_text(json.dumps(result, indent=2))
             write_stretch_txt(scenes, markers)
+            if "ranges" in result:
+                write_stats_txt(scenes, markers)
             log.info(
                 "OK %s: %.2f GB -> %.3f GB (%.1fx, %s), stretch %s, download %ss, compress %ss, upload %ss",
                 scene, result["original_bytes"] / 1e9, result["cog_bytes"] / 1e9,
