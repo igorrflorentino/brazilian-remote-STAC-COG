@@ -18,6 +18,7 @@ import rasterio
 from rasterio.transform import from_origin
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import check_updates  # noqa: E402
 import make_links  # noqa: E402
 import pansharpen_scene  # noqa: E402
 import process_all  # noqa: E402
@@ -247,6 +248,85 @@ class ShiftedRanges(unittest.TestCase):
         stats = read_stats(HERE / "stats.txt")["20250706_233_125"]
         shifts = [lo - c[0] for (lo, _), c in zip(stats, scene_stats.COMMON_RANGE)]
         self.assertEqual(shifts, [-11, -11, -13])
+
+
+class CheckUpdates(unittest.TestCase):
+    def preview(self, ground, cloud_fraction=0.0, size=100):
+        a = np.zeros((3, size, size), "uint8")
+        a[:, :, : size // 2] = np.array(ground, "uint8")[:, None, None]  # the right half is no data
+        n = int(size * (size // 2) * cloud_fraction)
+        flat = a.reshape(3, -1)
+        idx = np.flatnonzero((a[0] != 0).reshape(-1))[:n]
+        flat[:, idx] = 250
+        return flat.reshape(3, size, size)
+
+    def test_item_ids_give_date_and_cell(self):
+        self.assertEqual(check_updates.parse_item_id("CBERS4A_WPM_PCA_RGB321_20250806_233_126"), ("20250806", "233_126"))
+        self.assertIsNone(check_updates.parse_item_id("something_else"))
+        self.assertEqual((check_updates.cell_of("20250806_233_126"), check_updates.date_of("20250806_233_126")), ("233_126", "20250806"))
+
+    def test_a_clear_scene_at_the_typical_dark_level_has_no_cloud_or_haze(self):
+        m = check_updates.cloud_and_haze(self.preview((40, 52, 70)))
+        self.assertEqual((m["cloud"], m["haze"], m["valid"]), (0.0, 0.0, 50.0))
+
+    def test_cloud_percentage_and_haze_are_measured(self):
+        m = check_updates.cloud_and_haze(self.preview((60, 72, 90), cloud_fraction=0.2))
+        self.assertAlmostEqual(m["cloud"], 20.0, delta=0.5)
+        self.assertAlmostEqual(m["haze"], 20.0, delta=0.5)
+
+    def test_an_empty_scene_counts_as_all_cloud(self):
+        self.assertEqual(check_updates.cloud_and_haze(np.zeros((3, 10, 10), "uint8"))["cloud"], 100.0)
+
+    def test_a_newer_scene_is_an_upgrade_only_if_clearer(self):
+        current = {"cloud": 6.0, "haze": 10.0, "valid": 60.0}  # score 11
+        self.assertTrue(check_updates.is_upgrade({"cloud": 1.0, "haze": 5.0, "valid": 60.0}, current))
+        self.assertFalse(check_updates.is_upgrade({"cloud": 5.0, "haze": 12.0, "valid": 60.0}, current))  # smokier: no better
+        self.assertFalse(check_updates.is_upgrade({"cloud": 10.5, "haze": 0.0, "valid": 60.0}, current))
+
+    def test_a_cell_with_no_fused_scene_takes_any_clear_enough_one(self):
+        self.assertTrue(check_updates.is_upgrade({"cloud": 8.0, "haze": 10.0, "valid": 60.0}, None))
+        self.assertFalse(check_updates.is_upgrade({"cloud": 12.0, "haze": 0.0, "valid": 60.0}, None))
+        self.assertFalse(check_updates.is_upgrade({"cloud": 1.0, "haze": 40.0, "valid": 60.0}, None))  # smoke
+
+    def test_snapshots_txt_has_what_the_checker_reads(self):
+        snap = check_updates.read_snapshots()
+        for key in ("deter", "focos", "car", "car_count", "prodes"):
+            self.assertIn(key, snap)
+        for key in ("deter", "focos", "car"):
+            self.assertRegex(snap[key], r"^\d{4}-\d\d-\d\d$")
+        self.assertIsInstance(int(snap["car_count"]), int)
+
+    def test_hits_and_latest_read_the_wfs_answers(self):
+        xml = b'<wfs:FeatureCollection numberMatched="1234" numberReturned="0"/>'
+        self.assertEqual(check_updates.hits("http://x", fetch=lambda u: xml), 1234)
+        body = b'{"features": [{"properties": {"view_date": "2026-10-20"}}]}'
+        self.assertEqual(check_updates.latest("http://x", "l", "1=1", "view_date", fetch=lambda u: body), "2026-10-20")
+        self.assertIsNone(check_updates.latest("http://x", "l", "1=1", "view_date", fetch=lambda u: b'{"features": []}'))
+
+    def test_get_retries_a_server_error_but_not_a_client_error(self):
+        calls = []
+
+        def flaky(req, timeout):
+            calls.append(1)
+            if len(calls) < 3:
+                raise check_updates.urllib.error.HTTPError(req.full_url, 503, "busy", {}, None)
+
+            class Ok:
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self): return b"fine"
+            return Ok()
+
+        with mock.patch.object(check_updates.urllib.request, "urlopen", flaky), mock.patch.object(check_updates.time, "sleep"):
+            self.assertEqual(check_updates.get("http://x"), b"fine")
+        self.assertEqual(len(calls), 3)
+
+        def not_found(req, timeout):
+            raise check_updates.urllib.error.HTTPError(req.full_url, 404, "gone", {}, None)
+
+        with mock.patch.object(check_updates.urllib.request, "urlopen", not_found), mock.patch.object(check_updates.time, "sleep"):
+            with self.assertRaises(check_updates.urllib.error.HTTPError):
+                check_updates.get("http://x")
 
 
 class Download(unittest.TestCase):

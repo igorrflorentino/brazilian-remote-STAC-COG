@@ -1,0 +1,9 @@
+# When each snapshot layer of the Atlas map was built (YYYY-MM-DD), read by pipeline/check_updates.py.
+# Update the line when a layer is rebuilt, or the monthly check will count old news again.
+deter 2026-10-30         # Alertas DETER, últimos 12 meses (INPE)
+focos 2026-10-30         # Focos de calor, últimos 12 meses (INPE)
+car 2026-10-30           # Imóveis rurais (CAR/SICAR)
+car_count 63094          # properties built into that layer (Atlas imported 63,090)
+embargos 2026-10-30      # Embargos (IBAMA)
+assentamentos 2026-10-30 # Assentamentos (INCRA via INPE)
+prodes 2025              # last year of Desmatamento PRODES 2016-2025 (INPE)

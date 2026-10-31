@@ -219,6 +219,7 @@ S.FOLDERS = [
   ['Pontos de interesse', ['Aeródromos (ANAC)', 'Escolas e saúde (OSM)']],
   ['Vias e hidrografia', ['Estradas e ramais (OSM)', 'Ruas urbanas (OSM)', 'Rios e igarapés (OSM)']],
   ['Desmatamento (INPE)', ['Alertas DETER, últimos 12 meses (INPE)', 'Desmatamento PRODES 2016-2025 (INPE)']],
+  ['Alertas MapBiomas', ['Alertas validados (MapBiomas Alerta, ao vivo)', 'Imóveis com alerta (MapBiomas Alerta, ao vivo)']],
   ['Fundiário e fiscalização', ['Focos de calor, mês atual (INPE, ao vivo)', 'Focos de calor, últimos 12 meses (INPE)', 'Embargos (IBAMA)', 'Assentamentos (INCRA via INPE)', 'Imóveis rurais (CAR/SICAR)']],
   ['Limites e áreas protegidas', ['Terras Indígenas (FUNAI via INPE)', 'Unidades de Conservação (MMA/CNUC)', 'Municípios (IBGE via INPE)', 'Limite do Acre']],
   [S.SCENES_FOLDER, ['Datas das imagens CBERS-4A', S.SCENES]],
