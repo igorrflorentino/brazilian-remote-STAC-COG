@@ -149,6 +149,11 @@ services. As built on 2026-10-29 (the project now groups them in
   so the map has no separate places layer.
 - DETER and PRODES are snapshots. To refresh them, rebuild and upload those
   layers with `pipeline/hybrid_layers.js`, then delete the old ones.
+- "Datas das imagens" lists the scenes of the map, so rebuild it whenever the
+  scene set changes (`HY.run(['cenas'])`, `HY.uploadAll(['cenas'])`,
+  `HY.applyStyle('cenas')`, then delete the old layer): it reads the layer names
+  and takes each footprint from the fused item or, for a pansharpened scene,
+  the unfused one. It was rebuilt on 2026-10-30 with the 5 pansharpened scenes.
 
 To rebuild, paste `pipeline/hybrid_layers.js` into the browser console of the
 Atlas project and run `HY.run([...])`, `HY.uploadAll([...])` (bottom layer
@@ -180,6 +185,10 @@ services. Like DETER and PRODES they are snapshots; these were built on
   embargoes in Acre have only a point and are left out.
 - INCRA's SIGEF parcels are not included: `acervofundiario.incra.gov.br` did
   not resolve from the build host and SIGEF's downloads are not scriptable. The
+  file has to be downloaded by hand from INCRA's land-holdings portal (the
+  certified parcels of Acre); `fundiario_layers.py` can then be extended to read
+  it, keeping the parcel code, status, area, municipality and certification date
+  and dropping the holder's name and CPF/CNPJ, as it does for IBAMA. The
   settlements are INPE's copy of INCRA's layer, with no date stated.
 - Atlas imported 63,090 of the 63,094 CAR properties and all the others. The
   4 it did not accept were not identified; 50 properties have self-intersecting
@@ -239,7 +248,8 @@ or shown at once. Top to bottom:
   including the INPE mosaic of "Fundo Sentinel-2", which has to stay hidden.
 - The "Imagens" folder is kept collapsed. Atlas draws no rows for the layers
   of a collapsed folder, so the scripts open the folders they need
-  (`S.expandAll`, `HY.expand`) and leave them open.
+  (`S.expandAll`, `HY.expand`) and leave them open: collapse it again with
+  `S._ads.setFolderExpanded(S.folder(S.SCENES_FOLDER).id, false)`.
 - New layers land at the top of the list, outside the folders.
   `atlas_refresh.js` files new scenes into their folder by date, and
   `await S.organize()` files every layer into its folder. `S.FOLDERS` holds
@@ -452,8 +462,9 @@ the pan at 2 m and the blue, green, red and near-infrared bands at 8 m.
 - **No coregistration.** On a 1.4 km window of 241/124 (2022-10-09) the
   correlation of the pan's 4 x 4 mean with each colour band peaked at a shift
   of 0 px (0.62 red, 0.60 green, 0.55 blue). The defect of
-  [20251107_233_126](#defective-fused-scenes) cannot happen here: every band
-  comes from the same L4 file, and the result shows no coloured fringes.
+  [20251107_233_126](#defective-fused-scenes) is not expected here: that was
+  a flaw of INPE's PCA fusion, these bands come straight from the L4 file, and
+  the result shows no coloured fringes.
 - **Scale.** The L4 bands are in DN, three times INPE's fused values. The DN
   are multiplied by 0.32, the median of the gains of four fused scenes against
   their own unfused bands (0.25-0.40: INPE rescales each scene on its own), and
@@ -466,17 +477,19 @@ the pan at 2 m and the blue, green, red and near-infrared bands at 8 m.
   their metadata says the source is the L4 item and that the scene was
   pansharpened. The services read them as any other.
 
-The dates were picked among 24 candidates, measured on 1/8 reads of the colour
-bands (cloud by the `--common` rule scaled to DN, dark level, and the largest
-step between neighbouring columns), and looked at on the STAC thumbnails:
+The dates were picked among 24 candidates. All were looked at on the STAC
+thumbnails, and the 13 that could win were measured on 1/8 reads of the colour
+bands: cloud (a pixel whose darkest band is above 2.2 times the scene's median
+one), the dark level (5th percentile of the cloud-free pixels, in DN) and the
+largest step between neighbouring columns of the red band:
 
 | Cell | Date | Cloud | Dark level (DN, R/G/B) | Inside Acre | Why |
 |---|---|---|---|---|---|
 | 235/126 | 2022-06-06 | 0.3 % | 72/102/142 | 8,940 km² | clearest of 6; 2022-05-06 is close (0.2 %, 78/112/155) |
 | 238/124 | 2022-06-22 | 5.7 % | 71/100/144 | 8,950 km² | newer than 2020-10-10 (3.7 %, 104/149/194); 2021-06-15 has a 15 % tone step |
-| 239/124 | 2020-08-04 | 0.1 % | 150/217/310 | 8,968 km² | hazy, but the others are worse: 2020-09-04 is smoke (237/316/440), the two 2021 dates are cloudy |
+| 239/124 | 2020-08-04 | 0.1 % | 150/217/310 | 8,968 km² | hazy, but the others are worse: 2020-09-04 is smoke (237/316/440), the two 2021 dates are cloudy or hazy on their thumbnails |
 | 241/123 | 2021-07-01 | 0 % | 70/102/142 | 4,838 km² | only 50 % of the scene has data (two strips); 2021-04-30 has 9 % cloud by the rule and a heavy bank |
-| 241/124 | 2022-10-09 | 5.9 % | 100/142/185 | 319 km² | the cell lies mostly in Peru; 2022-09-08 is hazier |
+| 241/124 | 2022-10-09 | 5.9 % | 100/142/185 | 319 km² | the cell lies mostly outside Acre; 2022-09-08 is hazier |
 
 For reference, the dark level of a typical clear fused scene (40/52/70) is about
 125/165/220 DN at this gain.
@@ -490,7 +503,7 @@ measured the same way for both, in EPSG:5880). Their limits:
 - They are our own sharpening of INPE's L4 product, not INPE's PCA fusion. The
   gain is an approximation: the contrast can differ by 25 % from a neighbouring
   fused scene, and the tone of two scenes of different dates differs anyway.
-- 241/123 has a gap where the satellite did not image; the Sentinel-2
+- 241/123 has a gap in the data (the scene is two strips); the Sentinel-2
   background shows there. 235/127 has no scene in the unfused collection
   either and stays on the background.
 - 241/124 is lighter and greener on its left third than on the rest: a smooth
