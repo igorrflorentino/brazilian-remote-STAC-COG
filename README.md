@@ -346,9 +346,10 @@ pansharpened cells have no fused scene yet; no new DETER alert, hotspot or CAR
 property since the layers were built; PRODES is at 2025; the three live WMS
 layers and the service answer.
 
-A local scheduled task, `acre-map-monthly-check`, runs it on the 1st of each
-month at 09:00 and reports the result; it changes nothing. Disable or delete
-it in the app's scheduled tasks.
+It is not scheduled yet: run it by hand once a month (the 1st is a good day,
+DETER and MapBiomas publish weekly), or create a task in the Claude app's
+scheduled tasks whose prompt runs this command in the pipeline environment and
+reports the output. It writes nothing, so a scheduled run is safe.
 
 ## Service
 
