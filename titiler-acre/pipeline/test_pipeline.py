@@ -181,6 +181,48 @@ class Pansharpen(unittest.TestCase):
         self.assertTrue((whole[:, :4 * h4, :4 * w4][:, 4:-4, 4:-4] > 0).all())
 
 
+class PansharpenBuild(unittest.TestCase):
+    """build() must never leave a half-written scene under the final name."""
+
+    def build(self, tmp, fake_pansharpen):
+        urls = {b: f"https://example.test/band{b}.tif" for b in (0, 3, 2, 1)}
+
+        def fake_download(url, dest, max_mbps):
+            dest.write_bytes(b"band")
+            return dest
+
+        with (
+            mock.patch.object(pansharpen_scene, "band_urls", return_value=urls),
+            mock.patch.object(pansharpen_scene, "download", fake_download),
+            mock.patch.object(pansharpen_scene, "pansharpen", fake_pansharpen),
+            mock.patch.object(pansharpen_scene, "add_overviews"),
+        ):
+            pansharpen_scene.build("20221009_241_124", tmp / "scene.tif", tmp / "work", 20)
+        return sorted(p.name for p in tmp.rglob("*") if p.is_file())
+
+    def test_a_failure_leaves_no_scene_and_no_downloads(self):
+        def fail(pan, ms, dest, **kwargs):
+            dest.write_bytes(b"half")  # a real one is slow and can be killed here
+            raise RuntimeError("boom")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(RuntimeError):
+                self.build(Path(tmp), fail)
+            self.assertEqual(sorted(p.name for p in Path(tmp).rglob("*") if p.is_file()), [])
+
+    def test_the_scene_is_written_under_a_part_name_until_it_is_whole(self):
+        seen = []
+
+        def write(pan, ms, dest, **kwargs):
+            seen.append(dest.name)
+            dest.write_bytes(b"x")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            left = self.build(Path(tmp), write)
+        self.assertEqual(seen, ["scene.tif.part"])
+        self.assertEqual(left, ["scene.tif"])  # renamed, and the downloads are gone
+
+
 class ShiftedRanges(unittest.TestCase):
     def preview(self, dark, extra=0):
         a = np.zeros((3, 100, 100), "uint8")

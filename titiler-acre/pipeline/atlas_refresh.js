@@ -8,7 +8,7 @@
 // Paste into the browser console of the Atlas project page. Long loops run
 // unawaited and keep progress on S (S.added, S.verified, S.deletedConns):
 //   S.runAdds([{scene, name, url}, ...]);   // from wmts_links.csv, any order
-//   S.runVerify();                          // gis-api tile against service tile
+//   S.runVerify();                          // gis-api tile against service tile (optionally S.runVerify(['20221009_241_124']))
 //   await S.openOldMenu();                  // then choose "Delete N datasets"
 //   S.runDeleteConns();                     // leaves "Also delete datasets" unchecked
 //   await S.organize();                     // files every layer into S.FOLDERS (safe to repeat)
@@ -118,10 +118,10 @@ S.tile = (lon, lat, z) => { const n = 2 ** z, x = Math.floor((lon + 180) / 360 *
 S.pixels = async url => { let init = {cache: 'no-store'}; if (url.includes('atlas.co')) { const t = await S.map._requestManager.transformRequest(url, 'Tile'); url = t.url || url; init = {headers: t.headers, credentials: t.credentials || 'include', cache: 'no-store'}; } const r = await fetch(url, init); if (r.status !== 200) return {status: r.status}; const bmp = await createImageBitmap(await r.blob()); const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d'); g.drawImage(bmp, 0, 0); return {status: 200, d: g.getImageData(0, 0, bmp.width, bmp.height).data}; };
 S.diff = (a, b) => { if (a.status !== 200 || b.status !== 200 || a.d.length !== b.d.length) return null; let s = 0, n = 0; for (let i = 0; i < a.d.length; i += 4) { if (a.d[i + 3] === 0 && b.d[i + 3] === 0) continue; n++; s += Math.abs(a.d[i] - b.d[i]) + Math.abs(a.d[i + 1] - b.d[i + 1]) + Math.abs(a.d[i + 2] - b.d[i + 2]) + Math.abs(a.d[i + 3] - b.d[i + 3]); } return n ? +(s / n / 4).toFixed(2) : 0; };
 S.opaque = p => { if (!p.d) return null; let o = 0; for (let i = 3; i < p.d.length; i += 4) o += p.d[i] > 0; return Math.round(100 * o / (p.d.length / 4)); };
-S.verifyNew = async (zooms = [12, 15]) => {
+S.verifyNew = async (zooms = [12, 15], only) => {
   await S.ads(); S.map = S.map || S.findMap();
   const rows = [];
-  for (const it of S.items().filter(S.isNew)) {
+  for (const it of S.items().filter(S.isNew).filter(i => !only || only.some(id => i.server_url.includes(id)))) {
     const [w, s, e, n] = it.bbox, lon = (w + e) / 2, lat = (s + n) / 2;
     for (const z of zooms) {
       const [x, y] = S.tile(lon, lat, z);
@@ -132,7 +132,7 @@ S.verifyNew = async (zooms = [12, 15]) => {
   }
   S.verified = rows;
 };
-S.runVerify = () => { S.verified = null; S.verifyNew().catch(e => { S.verified = 'ERR ' + e; }); };
+S.runVerify = only => { S.verified = null; S.verifyNew([12, 15], only).catch(e => { S.verified = 'ERR ' + e; }); };
 
 // Old layers: select the contiguous block of old rows, then the context menu's
 // "Delete N datasets".
