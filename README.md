@@ -5,15 +5,18 @@ maps such as [Atlas](https://app.atlas.co), which only take remote rasters
 through WMS/WMTS.
 
 `titiler-acre/` is a small [TiTiler](https://developmentseed.org/titiler/) 2.4
-service on Cloud Run. It serves 33 scenes of INPE's `CB4A-WPM-PCA-FUSED`
-collection (Brazil Data Cube), copied as linearly stretched JPEG COGs into a
-private Cloud Storage bucket in the same region as the service.
+service on Cloud Run. It serves 38 scenes of INPE's Brazil Data Cube imagery,
+33 of the `CB4A-WPM-PCA-FUSED` collection and 5 that we pansharpened from the
+unfused `CB4A-WPM-L4-DN` bands (see
+[Cells without a fused scene](#cells-without-a-fused-scene)), copied as linearly
+stretched JPEG COGs into a private Cloud Storage bucket in the same region as
+the service.
 
 ```
 data.inpe.br  (DEFLATE COGs, 3-6 GB per scene)
    |   pipeline/process_all.py: download once, stretch, recompress to JPEG 85, upload
    v
-gs://brazilian-remote-stac-cog-cbers4a-wpm  (private, southamerica-east1, ~38 GiB)
+gs://brazilian-remote-stac-cog-cbers4a-wpm  (private, southamerica-east1, ~47 GiB)
    |   /vsigs/ range reads with the service account (storage.objectViewer only)
    v
 Cloud Run "titiler-acre" (app.py)  --WMTS-->  Atlas or any WMTS client
@@ -30,21 +33,23 @@ All paths are relative to `titiler-acre/`.
 |---|---|
 | `app.py` | The TiTiler service (see [Service](#service)). |
 | `Dockerfile`, `requirements.txt` | Container: Python 3.11, rasterio 1.4.4, GDAL tuned for range reads. The base image and every package are pinned (see [Deploy](#deploy)). |
-| `make_links.py` | Builds the 33 WMTS links into `wmts_links.csv`. The CSV is git-ignored because it holds the service URL. |
-| `scenes.txt` | The 57 candidate scenes (`YYYYMMDD_path_row`): the original 50, the 5 clearer dates of [Scene choice](#scene-choice) and the 2 dates that replaced [defective scenes](#defective-fused-scenes). |
-| `scenes_acre.txt` | The 33 scenes in use, one per path/row cell with valid pixels inside Acre (`pipeline/acre_scenes.py`, `pipeline/acre_scenes.csv`). |
+| `make_links.py` | Builds the 38 WMTS links into `wmts_links.csv`. The CSV is git-ignored because it holds the service URL. |
+| `scenes.txt` | The 62 candidate scenes (`YYYYMMDD_path_row`): the original 50, the 5 clearer dates of [Scene choice](#scene-choice), the 2 dates that replaced [defective scenes](#defective-fused-scenes) and the 5 [pansharpened](#cells-without-a-fused-scene) ones. |
+| `scenes_acre.txt` | The 38 scenes in use, one per path/row cell with valid pixels inside Acre (`pipeline/acre_scenes.py`, `pipeline/acre_scenes.csv`). |
 | `stats.txt` | Per-band rescale ranges used in the links, in INPE's raw values (see [Rescale ranges](#rescale-ranges)). |
 | `stretch.txt` | Per-band linear stretch baked into each copy, raw low-high (see [Compression](#compression)). |
 | `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. It predates [Scene choice](#scene-choice): it still has the 5 replaced scenes and not the 5 that replaced them. |
-| `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre. |
+| `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre; `--unfused` reads scenes that have no fused original from their L4 DN band. |
 | `pipeline/check_bands.py` | Checks a scene's fused bands against INPE's unfused bands of the same pass; it flags the defective red band of [20251107_233_126](#defective-fused-scenes). Run it on every candidate scene. |
 | `pipeline/fetch_scene.py` | Resumable single-connection download from INPE (If-Range, backoff, throughput cap). |
-| `scenes_rgb.txt` | The 7 scenes whose copy is RGB JPEG instead of YCbCr (see [Compression](#compression)). |
+| `pipeline/pansharpen_scene.py` | Builds a fused-like RGB scene from INPE's unfused L4 DN bands (SFIM pansharpening), for the cells with no usable fused scene (see [Cells without a fused scene](#cells-without-a-fused-scene)). |
+| `scenes_pansharpened.txt` | The scenes in use that are built that way. |
+| `scenes_rgb.txt` | The 12 scenes whose copy is RGB JPEG instead of YCbCr: 7 hazy fused ones and the 5 pansharpened ones (see [Compression](#compression)). |
 | `pipeline/compress_cog.py` | `write_stretched_cog`, the pipeline's stretched JPEG COG; also unstretched COG variants (`jpeg`, `jpeg_rgb`, `webp`) from an RGBA intermediate. |
-| `pipeline/process_all.py` | Batch: download, stretch, compress, check, upload, one scene at a time; updates `stretch.txt`. |
-| `pipeline/scene_stats.py` | Writes `stats.txt` lines; `linear_bounds` picks each copy's stretch. |
+| `pipeline/process_all.py` | Batch: download (or pansharpen), stretch, compress, check, upload, one scene at a time; updates `stretch.txt`, and `stats.txt` for the pansharpened scenes. |
+| `pipeline/scene_stats.py` | Writes `stats.txt` lines; `linear_bounds` picks each copy's stretch; `shifted_ranges` gives a scene outside the last `--common` run its range. |
 | `pipeline/check_service.py` | Smoke test of a deployed service, including each scene's rescale ranges. |
-| `pipeline/test_pipeline.py` | Offline tests: stretch arithmetic, `stats.txt` and `stretch.txt`, download resume, upload retries. Run with `python -m unittest discover -s pipeline`. |
+| `pipeline/test_pipeline.py` | Offline tests: stretch arithmetic, `stats.txt` and `stretch.txt`, the pansharpening and the shifted ranges, download resume, upload retries. Run with `python -m unittest discover -s pipeline`. |
 | `pipeline/compare_quality.py` | Compares unstretched codec variants with an original scene, on local files. |
 | `pipeline/compare_served.py` | Compares the service's tiles with INPE's lossless originals: the measurements in [Compression](#compression). |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
@@ -134,7 +139,7 @@ services. As built on 2026-10-29 (the project now groups them in
 | Terras Indígenas (FUNAI via INPE) | TerraBrasilis `indigenous_area_legal_amazon`, intersecting Acre | 32 | orange outline, "TI" name |
 | Unidades de Conservação (MMA/CNUC) | MMA CNUC 07/2026 (INDE WFS), plus the state Resex do Rio Gregório from TerraBrasilis | 16 | dashed green outline by group (strict protection or sustainable use), name |
 | Municípios (IBGE via INPE) | TerraBrasilis `municipalities_legal_amazon`, codes `12*` | 22 | dashed white outline, name |
-| Datas das imagens CBERS-4A | footprints from INPE's STAC (`CB4A-WPM-PCA-FUSED-1`) | 33 | dotted outline with the scene date, up to zoom 9.5 |
+| Datas das imagens CBERS-4A | footprints from INPE's STAC (`CB4A-WPM-PCA-FUSED-1`, or `CB4A-WPM-L4-DN-1` for the pansharpened scenes) | 38 | dotted outline with the scene date, up to zoom 9.5 |
 | Limite do Acre | TerraBrasilis `states_legal_amazon`, `sigla='AC'` | 1 | white outline |
 
 - Geometries are simplified with Douglas-Peucker (0.00003-0.0001°, 3-11 m)
@@ -183,6 +188,28 @@ services. Like DETER and PRODES they are snapshots; these were built on
   [Licences](#licences): IBAMA's is open, and none is stated for the other
   three.
 
+A fifth layer, **Focos de calor, mês atual (INPE, ao vivo)**, is not a snapshot:
+it is a WMS connection (Add data > Connections > OGC services) to
+`https://terrabrasilis.dpi.inpe.br/queimadas/geoserver/dados_abertos/focos_mesatual_br_satref/wms`,
+drawn by Atlas' proxy as red squares, so INPE's updates to the current month
+(reference satellite) show without any rebuild. It restarts each month; the
+12-month snapshot above covers the older fires. Added by hand, with these
+quirks:
+
+- Connect with the layer-specific URL above. The workspace's capabilities
+  (189 layers) take about 21 s and Atlas times out.
+- In the add dialog's Style column pick `point`. The server lists `Focos` too,
+  but does not define it (tiles fail with `StyleNotDefined`), and the Layer
+  panel has no style selector, so the layer has to be re-added to change it.
+- Atlas stores the bounding box that the capabilities declare and hands it to
+  the map as the source's bounds, so no tile is requested outside it. INPE
+  declares the extent of each layer's data: `focos_48h_br_satref` (lon −62° to
+  −35°) would leave Acre without tiles, and `focos_hoje_br_satref` too. The
+  month layer is declared lon −73.7° to −34.7°, lat −30.7° to 5.0°: it covers
+  Acre except a strip west of 73.7°W (Serra do Divisor). If INPE changes the
+  declared box, re-add the layer. Checked on 2026-10-30: tiles in Acre return
+  HTTP 200 and draw.
+
 To rebuild, run `python pipeline/fundiario_layers.py work_fund` (a few minutes;
 `--ibama-csv` reuses the 170 MB national CSV if it is already on disk). It goes
 through curl, because SICAR's server fails the TLS handshake with Python's
@@ -203,9 +230,9 @@ or shown at once. Top to bottom:
 | Pontos de interesse | Aeródromos, Escolas e saúde |
 | Vias e hidrografia | Estradas e ramais, Ruas urbanas, Rios e igarapés |
 | Desmatamento (INPE) | Alertas DETER, Desmatamento PRODES |
-| Fundiário e fiscalização | Focos de calor, Embargos, Assentamentos, Imóveis rurais (CAR) |
+| Fundiário e fiscalização | Focos de calor (mês atual ao vivo, 12 meses), Embargos, Assentamentos, Imóveis rurais (CAR) |
 | Limites e áreas protegidas | Terras Indígenas, Unidades de Conservação, Municípios, Limite do Acre |
-| Imagens CBERS-4A (2 m) | Datas das imagens, then the 33 scenes, newest first |
+| Imagens CBERS-4A (2 m) | Datas das imagens, then the 38 scenes, newest first |
 | Fundo Sentinel-2 | The INPE mosaic (hidden) and EOX |
 
 - Hiding a folder hides all its layers. Showing it again shows all of them,
@@ -260,9 +287,10 @@ WebMercatorQuad only, plus:
 
 ## Compression
 
-The 33 copies in use are JPEG quality 85 COGs with an internal 1-bit mask,
-512 px blocks and AVERAGE overviews: 26 in YCbCr, and the 7 scenes listed in
-`scenes_rgb.txt` in RGB. Each band is stored **linearly stretched**:
+The 38 copies in use are JPEG quality 85 COGs with an internal 1-bit mask,
+512 px blocks and AVERAGE overviews: 26 in YCbCr, and the 12 scenes listed in
+`scenes_rgb.txt` in RGB (the 7 below and the 5 pansharpened ones, which are dark
+dry-season scenes too). Each band is stored **linearly stretched**:
 
 ```
 stored = clip(round((raw - low) * 255 / (high - low)), 0, 255)
@@ -317,14 +345,16 @@ and `linear_stretch` in its custom metadata.
 
 ## Coverage
 
-The 33 scenes cover about 82 % of Acre (134,700 of 164,165 km²):
+The 38 scenes cover about 95 % of Acre. The 33 fused ones cover 82 % of it
+(134,700 of 164,165 km²) and the 5 [pansharpened](#cells-without-a-fused-scene)
+ones bring it to 95.2 % (measured the same way for both):
 
 - `CB4A-WPM-PCA-FUSED` has no scene at all for cells 238/124, 239/124,
-  241/123, 241/124, 235/126 and 235/127.
+  241/123, 241/124 and 235/126, which the pansharpened scenes cover, and 235/127,
+  which has no scene in the unfused collection either.
 - Adjacent orbits leave thin slivers between scenes.
-- The fused collection starts in March 2023. INPE's unfused `CB4A-WPM-L4-DN`
-  collection has 2020-2022 scenes for most of the missing cells, as separate
-  pan and multispectral bands.
+- The fused collection starts in March 2023; the pansharpened scenes are of
+  2020-2022.
 
 A Sentinel-2 layer under the scenes fills these areas (see
 [Background layers](#background-layers)). It cannot show through clouds:
@@ -405,6 +435,87 @@ Check a new candidate before it enters `scenes_acre.txt`:
 python pipeline/check_bands.py 20250806_233_126
 ```
 
+### Cells without a fused scene
+
+The fused collection has no scene for five cells that reach into Acre (238/124,
+239/124, 241/123, 241/124 and 235/126). INPE's unfused `CB4A-WPM-L4-DN-1`
+collection (also CC BY 4.0, orthorectified) has 2020-2022 scenes for them, with
+the pan at 2 m and the blue, green, red and near-infrared bands at 8 m.
+`pipeline/pansharpen_scene.py` builds a fused-like scene from them, and
+`process_all.py` takes it from there (the scenes are listed in
+`scenes_pansharpened.txt`):
+
+- **SFIM.** The three colour bands are upsampled to 2 m with a cubic spline and
+  multiplied by the ratio of the pan to its own 4 x 4 mean, so each 8 m pixel
+  keeps its colour and the 2 m detail comes from the pan. Pixels near the edge
+  of a scene (2 colour pixels, 16 m) and with no data stay 0.
+- **No coregistration.** On a 1.4 km window of 241/124 (2022-10-09) the
+  correlation of the pan's 4 x 4 mean with each colour band peaked at a shift
+  of 0 px (0.62 red, 0.60 green, 0.55 blue). The defect of
+  [20251107_233_126](#defective-fused-scenes) cannot happen here: every band
+  comes from the same L4 file, and the result shows no coloured fringes.
+- **Scale.** The L4 bands are in DN, three times INPE's fused values. The DN
+  are multiplied by 0.32, the median of the gains of four fused scenes against
+  their own unfused bands (0.25-0.40: INPE rescales each scene on its own), and
+  stored as UInt8 with 0 as no data, the layout the pipeline expects.
+- **Range.** Like the two scenes of [Rescale ranges](#rescale-ranges), each one
+  gets the common range shifted by its own dark level
+  (`scene_stats.shifted_ranges`), not a new `--common` run, so the other 33
+  links and Atlas layers stay as they are.
+- **Storage.** The copies are RGB JPEG 85 COGs like the fused ones, and
+  their metadata says the source is the L4 item and that the scene was
+  pansharpened. The services read them as any other.
+
+The dates were picked among 24 candidates, measured on 1/8 reads of the colour
+bands (cloud by the `--common` rule scaled to DN, dark level, and the largest
+step between neighbouring columns), and looked at on the STAC thumbnails:
+
+| Cell | Date | Cloud | Dark level (DN, R/G/B) | Inside Acre | Why |
+|---|---|---|---|---|---|
+| 235/126 | 2022-06-06 | 0.3 % | 72/102/142 | 8,940 km² | clearest of 6; 2022-05-06 is close (0.2 %, 78/112/155) |
+| 238/124 | 2022-06-22 | 5.7 % | 71/100/144 | 8,950 km² | newer than 2020-10-10 (3.7 %, 104/149/194); 2021-06-15 has a 15 % tone step |
+| 239/124 | 2020-08-04 | 0.1 % | 150/217/310 | 8,968 km² | hazy, but the others are worse: 2020-09-04 is smoke (237/316/440), the two 2021 dates are cloudy |
+| 241/123 | 2021-07-01 | 0 % | 70/102/142 | 4,838 km² | only 50 % of the scene has data (two strips); 2021-04-30 has 9 % cloud by the rule and a heavy bank |
+| 241/124 | 2022-10-09 | 5.9 % | 100/142/185 | 319 km² | the cell lies mostly in Peru; 2022-09-08 is hazier |
+
+For reference, the dark level of a typical clear fused scene (40/52/70) is about
+125/165/220 DN at this gain.
+
+With them the 38 scenes cover **95.2 %** of Acre, against 82.0 % for the 33
+fused ones (the union of the valid-data footprints inside IBGE's boundary,
+measured the same way for both, in EPSG:5880). Their limits:
+
+- They are 4-6 years older than the others (2023-2026): clearings and
+  buildings since then are not on them.
+- They are our own sharpening of INPE's L4 product, not INPE's PCA fusion. The
+  gain is an approximation: the contrast can differ by 25 % from a neighbouring
+  fused scene, and the tone of two scenes of different dates differs anyway.
+- 241/123 has a gap where the satellite did not image; the Sentinel-2
+  background shows there. 235/127 has no scene in the unfused collection
+  either and stays on the background.
+- 241/124 is lighter and greener on its left third than on the rest: a smooth
+  gradient across the swath (the red band falls from 50 to 30 stored levels),
+  more like haze or smoke than a sensor step. It shows in the overview, less at
+  working zoom, and is not corrected.
+- The range of each scene is the common one shifted by its dark level:
+  -22 / -26 / -33 levels for the two June 2022 scenes, -23 / -28 / -35 for
+  241/123, -12 / -12 / -18 for 241/124 and -2 / +4 / +11 for 239/124. The
+  first ones are lower than any fused scene (-17 at most): clear air with a low
+  sun, and a gain of 0.32 that is on the low side for such scenes.
+- 239/124 and 241/123 are the hazy ones (July-August 2020 and 2021, fire
+  season), and haze lowers the image's own contrast: 239/124 looks washed out
+  and bluish next to its neighbours.
+- Faint stripes along the track (a few stored levels, no step above 5 in the
+  three scenes measured on the served previews) are in the unfused bands, as
+  they are in some fused scenes. They were not corrected.
+
+The five copies are 1.68, 1.95, 1.69, 2.95 and 1.73 GB (10.0 GB, RGB JPEG
+85), and each took 17-24 minutes: 8-14 min to download (the pan band is 2.4-3.0
+GB), about 4 min to pansharpen (3 threads, 3.0 GB of UInt8 with ZSTD), 5-6 min
+to compress and 2-4 min to upload. The pansharpened file needs overviews
+(`add_overviews`): without them `linear_bounds` decodes the whole scene once per
+band (more than 10 minutes). Peak disk use is about 12 GB.
+
 ## Rescale ranges
 
 All scenes share one contrast, so neighbouring scenes match on the map.
@@ -437,6 +548,9 @@ Their ranges are the common one of the other 31 scenes (39-91 / 51-90 /
 69-111, recovered from `stats.txt`) shifted by their own offset from the
 typical dark level (40 / 52 / 70), as in steps 3-5. The next full run folds
 them in.
+
+The 5 scenes built from the unfused bands got their ranges the same way, from their
+own pixels (see [Cells without a fused scene](#cells-without-a-fused-scene)).
 
 The earlier per-scene 2-98 % ranges (`--service`, `--inpe`) failed both
 ways:
@@ -529,8 +643,8 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
   until it is recycled (about 15 minutes idle) or a new revision is deployed.
 - **Striping:** the vertical contrast bands in some scenes, such as
   `20261025_237_125`, are already in INPE's originals.
-- **Costs:** storage is the main one: ~38 GiB Standard in
-  southamerica-east1, about US$ 1.35 a month. Cloud Run scales to zero and
+- **Costs:** storage is the main one: ~47 GiB Standard in
+  southamerica-east1, about US$ 1.65 a month (US$ 1.35 for the first 38 GiB). Cloud Run scales to zero and
   light use stays in the free tier. Reads from the bucket in the same region
   carry no egress charge. A budget alert watches the project; it notifies, it
   does not cap spending.
@@ -544,13 +658,14 @@ commercial use.
 | Source | Licence found | Where | Commercial use |
 |---|---|---|---|
 | CBERS-4A WPM, fused (INPE/BDC) | CC BY 4.0 | `license` of the BDC STAC collection | Yes, with attribution; say the copies were changed |
+| CBERS-4A WPM, L4 DN (INPE/BDC), the pansharpened scenes | CC BY 4.0 | `license` of the BDC STAC collection `CB4A-WPM-L4-DN-1` | Yes, with attribution; say the scenes were pansharpened and changed |
 | INPE Sentinel-2 mosaic | "proprietary", pointing to the Copernicus Sentinel Data Legal Notice | BDC STAC collection | Under that notice (its text was not read here) |
 | EOX Sentinel-2 cloudless 2025 | CC BY-NC-SA 4.0 | EOX's release notes and pricing page | **No.** EOX sells a commercial licence (cloudless.eox.at) |
 | OpenStreetMap layers | ODbL | not rechecked | Yes, with attribution; share-alike for derived databases |
 | IBAMA embargoes | catalogue: "Outra (Aberta)" for the CSV dataset, ODbL for the polygon shapefile dataset | `dadosabertos.ibama.gov.br` CKAN API | Yes per the catalogue; ODbL share-alike for the shapefile |
 | CNUC, MMA | CC BY | `dados.mma.gov.br` CKAN API | Yes, with attribution |
 | CAR (SICAR's WFS) | none stated | CMRI decision 217/2022: public CAR data are available through the public consultation and the WMS/WFS geoserver, and says nothing about reuse | Not licensed; ask SFB |
-| Fire hotspots (INPE Queimadas) | none stated | the portal's open-data page and the two documentation PDFs mention no licence or terms | Not licensed; ask INPE |
+| Fire hotspots (INPE Queimadas), 12-month snapshot and live WMS layer | none stated | the portal's open-data page and the two documentation PDFs mention no licence or terms | Not licensed; ask INPE |
 | Settlements (INCRA via INPE) | none found | INPE's geoserver states no constraints; INCRA's servers were unreachable | Not licensed; ask INCRA/INPE |
 | PRODES, DETER, indigenous lands (TerraBrasilis) | secondary sources say CC BY-SA 4.0; not confirmed | TerraBrasilis pages are not readable without a browser | Unconfirmed; CC BY-SA would be share-alike |
 | IBGE boundaries | no explicit licence found | search only | Unconfirmed |
@@ -565,7 +680,10 @@ Imagery: INPE / Brazil Data Cube, `CB4A-WPM-PCA-FUSED`,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The copies served
 here are linearly stretched per band and recompressed (lossy JPEG quality
 85), as recorded in each object's metadata and in the service's attribution
-text.
+text. Five scenes (`scenes_pansharpened.txt`) are INPE / Brazil Data Cube
+`CB4A-WPM-L4-DN` (CC BY 4.0) bands that we pansharpened. Their object metadata
+says so; the credit line on the Atlas map says the imagery is "modificadas",
+and the service's own attribution text names only the fused collection.
 
 Background layers:
 
@@ -589,5 +707,5 @@ Hybrid map layers:
   aerodromes.
 - Serviço Florestal Brasileiro, SICAR (Cadastro Ambiental Rural), public
   consultation service; IBAMA open data, embargoed areas (without personal
-  data); INCRA settlements and INPE Queimadas fire hotspots, as published by
-  INPE's BDQueimadas geoserver. See [Licences](#licences) for their terms.
+  data); INCRA settlements and INPE Queimadas fire hotspots (snapshot and live
+  WMS), as published by INPE's BDQueimadas geoserver. See [Licences](#licences) for their terms.

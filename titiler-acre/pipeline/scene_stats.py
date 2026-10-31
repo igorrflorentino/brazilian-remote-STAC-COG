@@ -58,6 +58,8 @@ SAMPLE_PX = 150_000  # cloud-free pixels per scene in the pooled range
 # Forest is most of Acre and half the pooled pixels sit within 5 levels of the
 # dark end, so a 98 % top falls inside pasture and clips it.
 POOLED_PCT = (2, 99.5)
+TYPICAL_DARK = (40, 52, 70)  # median dark level of the 31 scenes before the first replaced one (see shifted_ranges)
+COMMON_RANGE = ((39, 91), (51, 90), (69, 111))  # their common range, recovered from stats.txt
 
 # linear_bounds
 STRETCH_PREVIEW = 16  # read the original at 1/16, from its overviews
@@ -143,6 +145,31 @@ def linear_bounds(src_path: Path, ranges: list[tuple[int, int]]) -> tuple[list[i
     low = [int(max(1, min(v - STRETCH_MARGIN, r[0] - STRETCH_MARGIN))) for v, r in zip(lo, ranges)]
     high = [int(min(255, max(v + STRETCH_MARGIN, r[1] + STRETCH_MARGIN))) for v, r in zip(hi, ranges)]
     return low, high
+
+
+def shifted_ranges(a: np.ndarray) -> list[tuple[int, int]]:
+    """Common range shifted by the scene's own dark level, for a scene outside the last --common run.
+
+    a is the scene's preview (3 x H x W, raw values, 0 = no data). The offset is
+    the 5th percentile of its cloud-free pixels minus TYPICAL_DARK, the same
+    steps --common takes for every scene, but against fixed numbers: the median
+    dark level and the common range of the 31 scenes of the run before the
+    pansharpened ones, so that adding a scene does not move the other links.
+    """
+    valid = (a != 0).any(axis=0)
+    darkest = a.min(axis=0)
+    cloud = valid & (darkest > max(CLOUD_MIN, np.median(darkest[valid]) + CLOUD_ABOVE_GROUND))
+    px = a[:, valid & ~grow(cloud, CLOUD_GROW_PX)]
+    offset = np.percentile(px, 5, axis=1) - TYPICAL_DARK
+    return [(max(0, round(lo + o)), min(255, round(hi + o))) for (lo, hi), o in zip(COMMON_RANGE, offset)]
+
+
+def preview_ranges(src_path: Path) -> list[tuple[int, int]]:
+    """shifted_ranges of a local scene, read at about PREVIEW_SIZE px with nearest resampling."""
+    with rasterio.open(src_path) as src:
+        scale = max(src.width, src.height) / PREVIEW_SIZE
+        a = src.read(out_shape=(3, round(src.height / scale), round(src.width / scale)), resampling=Resampling.nearest)
+    return shifted_ranges(a)
 
 
 def common_ranges(base_url: str, scenes: list[str]) -> dict[str, list[tuple[int, int]]]:

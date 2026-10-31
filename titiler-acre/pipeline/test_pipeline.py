@@ -14,10 +14,14 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+import rasterio
+from rasterio.transform import from_origin
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import make_links  # noqa: E402
+import pansharpen_scene  # noqa: E402
 import process_all  # noqa: E402
+import scene_stats  # noqa: E402
 from check_bands import all_valid, band_correlations, red_gap, verdict  # noqa: E402
 from check_service import range_problems, rescale_of  # noqa: E402
 from fetch_scene import download  # noqa: E402
@@ -114,6 +118,95 @@ class CheckBands(unittest.TestCase):
         self.assertFalse(out[0].any() or out[-1].any() or out[:, 0].any() or out[:, -1].any())  # edges
 
 
+class Pansharpen(unittest.TestCase):
+    def test_a_flat_pan_leaves_the_colour_bands_times_the_gain(self):
+        pan = np.full((32, 48), 300, "int16")
+        ms = np.stack([np.full((8, 12), v, "int16") for v in (100, 150, 200)])
+        out = pansharpen_scene.sharpen(pan, ms, gain=0.32)
+        self.assertEqual(out[:, 16, 24].tolist(), [32, 48, 64])
+
+    def test_the_pan_detail_is_added_to_every_band(self):
+        pan = np.full((32, 48), 300, "int16")
+        pan[16, 24] = 600  # a bright 2 m pixel in a flat 8 m one
+        ms = np.full((3, 8, 12), 150, "int16")
+        out = pansharpen_scene.sharpen(pan, ms, gain=0.32)
+        self.assertGreater(out[:, 16, 24].min(), out[:, 16, 20].max() * 1.4)
+
+    def test_no_data_is_zero_and_data_never_is(self):
+        rng = np.random.default_rng(1)
+        pan = rng.integers(150, 400, (64, 64)).astype("int16")
+        ms = rng.integers(60, 200, (3, 16, 16)).astype("int16")
+        pan[:, :8] = 0  # a scene edge
+        ms[:, :, :2] = 0
+        out = pansharpen_scene.sharpen(pan, ms)
+        self.assertTrue((out[:, :, :8] == 0).all())
+        self.assertTrue((out[:, :, 16:] > 0).all())
+
+    def test_the_bicubic_kernel_does_not_pull_zeros_into_the_edge(self):
+        pan = np.full((64, 64), 300, "int16")
+        ms = np.full((3, 16, 16), 150, "int16")
+        ms[:, :, :4] = 0
+        out = pansharpen_scene.sharpen(pan, ms)
+        edge = out[:, :, 4 * 4 + 2 * 4 :]  # beyond the eroded pixels
+        self.assertEqual(set(np.unique(edge)), {48})
+
+    def test_strips_give_the_same_scene_as_one_pass(self):
+        rng = np.random.default_rng(2)
+        h4, w4 = 40, 30
+        pan = (rng.integers(150, 400, (4 * h4 + 3, 4 * w4 + 1))).astype("int16")  # INPE's pan is 3 rows and 1 column longer
+        ms = [rng.integers(60, 200, (h4, w4)).astype("int16") for _ in range(3)]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+
+            def write(path, a, res):
+                with rasterio.open(path, "w", driver="GTiff", dtype="int16", count=1, height=a.shape[0], width=a.shape[1],
+                                   crs="EPSG:32718", transform=from_origin(500000, 9000000, res, res)) as dst:
+                    dst.write(a, 1)
+
+            write(tmp / "pan.tif", pan, 2)
+            for i, a in enumerate(ms):
+                write(tmp / f"ms{i}.tif", a, 8)
+            for name, strip in (("small", 16), ("whole", 4 * h4)):
+                pansharpen_scene.pansharpen(tmp / "pan.tif", [tmp / f"ms{i}.tif" for i in range(3)], tmp / f"{name}.tif", strip=strip)
+            pansharpen_scene.add_overviews(tmp / "whole.tif")
+            with rasterio.open(tmp / "whole.tif") as b:
+                self.assertEqual(len(b.overviews(1)), len(pansharpen_scene.OVERVIEWS))  # GDAL rounds the factors on a raster this small
+            with rasterio.open(tmp / "small.tif") as a, rasterio.open(tmp / "whole.tif") as b:
+                small, whole = a.read().astype(int), b.read().astype(int)
+                self.assertEqual((a.count, a.dtypes[0], a.nodata, a.shape), (3, "uint8", 0, pan.shape))
+                self.assertEqual(a.transform, b.transform)
+        self.assertLessEqual(np.abs(small - whole).max(), 1)
+        self.assertLess((small != whole).mean(), 0.01)
+        self.assertTrue((whole[:, -3:, :] == 0).all() and (whole[:, :, -1] == 0).all())  # the pixels beyond a multiple of 4
+        self.assertTrue((whole[:, :4 * h4, :4 * w4][:, 4:-4, 4:-4] > 0).all())
+
+
+class ShiftedRanges(unittest.TestCase):
+    def preview(self, dark, extra=0):
+        a = np.zeros((3, 100, 100), "uint8")
+        a[:, :, :50] = np.array(dark, "uint8")[:, None, None] + extra  # the right half is no data
+        return a
+
+    def test_the_typical_dark_level_gets_the_common_range(self):
+        self.assertEqual(scene_stats.shifted_ranges(self.preview(scene_stats.TYPICAL_DARK)), list(scene_stats.COMMON_RANGE))
+
+    def test_haze_shifts_every_band_by_its_own_offset(self):
+        dark = np.array(scene_stats.TYPICAL_DARK) + [10, 20, -5]
+        want = [(lo + o, hi + o) for (lo, hi), o in zip(scene_stats.COMMON_RANGE, [10, 20, -5])]
+        self.assertEqual(scene_stats.shifted_ranges(self.preview(dark)), want)
+
+    def test_clouds_do_not_set_the_dark_level(self):
+        a = self.preview(scene_stats.TYPICAL_DARK)
+        a[:, :, 10:40] = 250
+        self.assertEqual(scene_stats.shifted_ranges(a), list(scene_stats.COMMON_RANGE))
+
+    def test_stats_of_the_data_files_match_the_formula_for_the_replaced_scenes(self):
+        # 20250706_233_125 is a July scene: the common range shifted by about -11, -11, -13
+        stats = read_stats(HERE / "stats.txt")["20250706_233_125"]
+        shifts = [lo - c[0] for (lo, _), c in zip(stats, scene_stats.COMMON_RANGE)]
+        self.assertEqual(shifts, [-11, -11, -13])
+
+
 class Download(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Ranged)
@@ -170,6 +263,12 @@ class Modifications(unittest.TestCase):
     def test_no_commas_and_the_real_quality(self):  # gcloud splits custom metadata on commas
         text = process_all.MODIFICATIONS.format("RGB")
         self.assertNotIn(",", text)
+        self.assertIn(f"quality {process_all.QUALITY} (RGB", text)
+
+    def test_pansharpened_text_has_no_commas_and_says_so(self):
+        text = process_all.PANSHARPENED_MODIFICATIONS.format("RGB")
+        self.assertNotIn(",", text)
+        self.assertIn("Pansharpened", text)
         self.assertIn(f"quality {process_all.QUALITY} (RGB", text)
 
     def test_link_builder_keeps_the_bucket_prefix(self):
