@@ -182,10 +182,11 @@ HY.NAMES = {
   tis: 'Terras Indígenas (FUNAI via INPE)', ucs: 'Unidades de Conservação (MMA/CNUC)', municipios: 'Municípios (IBGE via INPE)',
   cenas: 'Datas das imagens CBERS-4A', limite: 'Limite do Acre',
   car: 'Imóveis rurais (CAR/SICAR)', assentamentos: 'Assentamentos (INCRA via INPE)', embargos: 'Embargos (IBAMA)',
-  focos: 'Focos de calor, últimos 12 meses (INPE)',
+  focos: 'Focos de calor, últimos 12 meses (INPE)', sigef: 'Parcelas certificadas (SIGEF/INCRA)',
 };
-// The four land-tenure and enforcement layers are built by pipeline/fundiario_layers.py. Serve
-// its output directory over http with CORS headers and read the files from there.
+// The land-tenure and enforcement layers (car, assentamentos, embargos, focos, and sigef once its
+// shapefile is at hand) are built by pipeline/fundiario_layers.py. Serve its output directory over
+// http with CORS headers and read the files from there.
 HY.load = async (base, keys) => {
   for (const k of keys) { HY.data[k] = await (await fetch(`${base.replace(/\/$/, '')}/${k}.geojson`)).json(); HY.say(`${k}: ${HY.data[k].features.length} features loaded`); }
 };
@@ -261,6 +262,7 @@ HY.STYLES = {
     ...label(['get', 'nome'], {color: '#cfe4ff', size: 11})},
   embargos: {'fill-color': embSit, 'fill-field': {value: 'situacao', type: 'str'}, 'fill-opacity': 0.35, 'fill-visible': true,
     'outline-color': embSit, 'outline-field': {value: 'situacao', type: 'str'}, 'outline-width': 1.8, 'outline-opacity': 1},
+  sigef: {'fill-color': '#facc15', 'fill-opacity': 0.08, 'fill-visible': true, 'outline-color': '#facc15', 'outline-width': 1.4, 'outline-opacity': 1, 'zoom-visibility': [9, 23]},
   focos: {'circle-color': '#ff5a1f', 'circle-radius': 3.5, 'circle-opacity': 0.95, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 0.8, 'circle-stroke-opacity': 0.9},
 };
 // Select the layer row, then call the style panel's own callbacks: one draws, the other saves.

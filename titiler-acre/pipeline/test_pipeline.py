@@ -19,6 +19,7 @@ from rasterio.transform import from_origin
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_updates  # noqa: E402
+import fundiario_layers  # noqa: E402
 import make_links  # noqa: E402
 import pansharpen_scene  # noqa: E402
 import process_all  # noqa: E402
@@ -296,6 +297,11 @@ class CheckUpdates(unittest.TestCase):
             self.assertRegex(snap[key], r"^\d{4}-\d\d-\d\d$")
         self.assertIsInstance(int(snap["car_count"]), int)
 
+    def test_last_time_reads_the_time_dimension(self):
+        xml = '<Layer><Dimension name="time" default="2016-08-01/2030-12-01" units="ISO8601">2026-08-01T03:00:00.000Z,2026-10-01T03:00:00.000Z</Dimension></Layer>'
+        self.assertEqual(check_updates.last_time(xml), "2026-10-01")
+        self.assertIsNone(check_updates.last_time("<Layer><Name>focos</Name></Layer>"))
+
     def test_hits_and_latest_read_the_wfs_answers(self):
         xml = b'<wfs:FeatureCollection numberMatched="1234" numberReturned="0"/>'
         self.assertEqual(check_updates.hits("http://x", fetch=lambda u: xml), 1234)
@@ -327,6 +333,42 @@ class CheckUpdates(unittest.TestCase):
         with mock.patch.object(check_updates.urllib.request, "urlopen", not_found), mock.patch.object(check_updates.time, "sleep"):
             with self.assertRaises(check_updates.urllib.error.HTTPError):
                 check_updates.get("http://x")
+
+
+class SigefShapefile(unittest.TestCase):
+    FIELDS = ["parcela_co", "rt", "art", "situacao_i", "codigo_imo", "data_aprov", "status", "nome_area", "registro_m", "municipio_", "uf_id"]
+
+    def write(self, tmp):
+        import shapefile
+
+        path = tmp / "sigef.shp"
+        with shapefile.Writer(str(path), shapeType=shapefile.POLYGON) as w:
+            for f in self.FIELDS:
+                w.field(f, "C", size=40)
+            square = lambda x, y: [[[x, y], [x, y + 0.01], [x + 0.01, y + 0.01], [x + 0.01, y], [x, y]]]  # noqa: E731
+            w.poly(square(-68.0, -10.0))
+            w.record("P-AC-1", "Fulano de Tal", "ART123", "Certificada", "0000000000001", "2021-05-12", "Certificada", "Fazenda do Fulano", "M-99", "1200401", "AC")
+            w.poly(square(-47.0, -15.0))
+            w.record("P-SP-1", "Ciclano", "ART9", "Certificada", "0000000000002", "2020-01-01", "Certificada", "Sitio X", "M-1", "3550308", "SP")
+        return path
+
+    def test_keeps_the_state_and_drops_the_people(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fc = fundiario_layers.build_sigef(self.write(Path(tmp)))
+        self.assertEqual(len(fc["features"]), 1)
+        props = fc["features"][0]["properties"]
+        self.assertEqual((props["codigo"], props["imovel"], props["situacao"], props["certificado_em"]), ("P-AC-1", "0000000000001", "Certificada", "12/05/2021"))
+        text = str(props)
+        for secret in ("Fulano", "ART123", "M-99"):  # the technician, the ART, the registry number
+            self.assertNotIn(secret, text)
+        for dropped in ("rt", "art", "registro_m", "nome_area"):
+            self.assertNotIn(dropped, props)
+        self.assertAlmostEqual(props["area_ha"], 0.01 * 0.01 * 111_320 * 111_320 * 0.98480775 / 1e4, delta=1.0)  # ~ 108 ha at 10 degrees south
+
+    def test_keep_names_is_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fc = fundiario_layers.build_sigef(self.write(Path(tmp)), keep_names=True)
+        self.assertEqual(fc["features"][0]["properties"]["nome_area"], "Fazenda do Fulano")
 
 
 class Download(unittest.TestCase):
