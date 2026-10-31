@@ -177,6 +177,13 @@ HY.NAMES = {
   rios: 'Rios e igarapés (OSM)', deter: 'Alertas DETER, últimos 12 meses (INPE)', prodes: 'Desmatamento PRODES 2016-2025 (INPE)',
   tis: 'Terras Indígenas (FUNAI via INPE)', ucs: 'Unidades de Conservação (MMA/CNUC)', municipios: 'Municípios (IBGE via INPE)',
   cenas: 'Datas das imagens CBERS-4A', limite: 'Limite do Acre',
+  car: 'Imóveis rurais (CAR/SICAR)', assentamentos: 'Assentamentos (INCRA via INPE)', embargos: 'Embargos (IBAMA)',
+  focos: 'Focos de calor, últimos 12 meses (INPE)',
+};
+// The four land-tenure and enforcement layers are built by pipeline/fundiario_layers.py. Serve
+// its output directory over http with CORS headers and read the files from there.
+HY.load = async (base, keys) => {
+  for (const k of keys) { HY.data[k] = await (await fetch(`${base.replace(/\/$/, '')}/${k}.geojson`)).json(); HY.say(`${k}: ${HY.data[k].features.length} features loaded`); }
 };
 HY.btn = t => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === t);
 HY.layerNames = () => new Set([...document.querySelectorAll('input:not([type=file])')].map(i => i.value));
@@ -217,6 +224,8 @@ const deter = cat('classe', [['Desmatamento (corte raso)', '#ff1a1a'], ['Desmata
 const roads = cat('tipo', [['Estrada', '#ffd60a'], ['Estrada vicinal', '#f2e2c4'], ['Ramal', '#d9a066'], ['Rodovia estadual', '#ff9500'], ['Rodovia federal', '#ff3b30']]);
 const rivers = cat('categoria', [['Igarapé', 'rgba(143,220,255,0.6)'], ['Rio', '#38b6ff']]);
 const ucs = cat('grupo', [['Proteção Integral', '#00ff9c'], ['Uso Sustentável', '#b6ff4d']]);
+const carSit = cat('situacao', [['Ativo', '#2dd4bf'], ['Pendente', '#cbd5e1'], ['Suspenso', '#c084fc'], ['Cancelado', '#6b7280']]);
+const embSit = cat('situacao', [['Embargado', '#fb7185'], ['Desembargado', '#94a3b8'], ['Cancelado', '#64748b']]);
 const c = ['get', 'camada'];
 HY.STYLES = {
   aerodromos: {'circle-color': cat('tipo', [['Privado', '#bf5af2'], ['Público', '#ff2d95']]), 'circle-radius': 6.5, 'circle-opacity': 1, 'circle-stroke-color': '#ffffff',
@@ -242,6 +251,13 @@ HY.STYLES = {
   cenas: {...noFill, 'outline-color': '#e6e6e6', 'outline-width': 0.8, 'outline-opacity': 0.6, 'outline-dasharray': ['literal', [1, 2]], 'zoom-visibility': [0, 9.5],
     ...label(['concat', ['slice', c, 17, 19], '/', ['slice', c, 14, 16], '/', ['slice', c, 9, 13]], {size: 11, color: '#e0f7ff'})},
   limite: {...noFill, 'outline-color': '#ffffff', 'outline-width': 2.5, 'outline-opacity': 0.9},
+  // 63,094 outlines: drawn from zoom 10 on, so the state view stays readable.
+  car: {...noFill, 'outline-color': carSit, 'outline-field': {value: 'situacao', type: 'str'}, 'outline-width': 0.7, 'outline-opacity': 0.85, 'zoom-visibility': [10, 23]},
+  assentamentos: {'fill-color': '#60a5fa', 'fill-opacity': 0.12, 'fill-visible': true, 'outline-color': '#60a5fa', 'outline-width': 1.6, 'outline-opacity': 1,
+    ...label(['get', 'nome'], {color: '#cfe4ff', size: 11})},
+  embargos: {'fill-color': embSit, 'fill-field': {value: 'situacao', type: 'str'}, 'fill-opacity': 0.35, 'fill-visible': true,
+    'outline-color': embSit, 'outline-field': {value: 'situacao', type: 'str'}, 'outline-width': 1.8, 'outline-opacity': 1},
+  focos: {'circle-color': '#ff5a1f', 'circle-radius': 3.5, 'circle-opacity': 0.95, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 0.8, 'circle-stroke-opacity': 0.9},
 };
 // Select the layer row, then call the style panel's own callbacks: one draws, the other saves.
 HY.applyStyle = async key => {

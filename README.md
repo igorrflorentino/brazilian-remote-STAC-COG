@@ -49,6 +49,7 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/compare_served.py` | Compares the service's tiles with INPE's lossless originals: the measurements in [Compression](#compression). |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
 | `pipeline/hybrid_layers.js` | Browser-console script that builds the [hybrid map layers](#hybrid-map-layers) and uploads them to Atlas. |
+| `pipeline/fundiario_layers.py` | Builds the four [land-tenure and enforcement layers](#land-tenure-and-enforcement-layers) (CAR, settlements, IBAMA embargoes, fire hotspots) as GeoJSON from their public sources. |
 | `pipeline/atlas_refresh.js` | Browser-console script that swaps the Atlas map's WMTS layers for new links, files the new scenes into their [folder](#atlas-folders) by date and checks them pixel by pixel against the service. `S.organize()` files every layer into the folders. |
 
 ## WMTS links
@@ -152,9 +153,47 @@ new layers into their [folders](#atlas-folders). The styles go through Atlas'
 internal React state, which is not a public API; if that breaks, `HY.STYLES`
 still documents the colours to set in the Layer panel.
 
+### Land-tenure and enforcement layers
+
+Four more vector layers, built by `pipeline/fundiario_layers.py` from public
+services. Like DETER and PRODES they are snapshots; these were built on
+2026-10-30:
+
+| Layer | Source | Features | Style |
+|---|---|---|---|
+| Focos de calor, últimos 12 meses (INPE) | INPE Queimadas geoserver, `dados_abertos:focos_*_br_satref` (reference satellite), `estado='ACRE'` | 2,194 | orange dots |
+| Embargos (IBAMA) | IBAMA open-data CSV `termo_embargo`, UF AC, rows with a polygon | 3,322 | outline and 35 % fill by status: embargoed rose, lifted and cancelled grey |
+| Assentamentos (INCRA via INPE) | INPE Queimadas geoserver, `bdqueimadas:assentamentos`, `uf='ACRE'` | 112 | blue outline, 12 % fill, name |
+| Imóveis rurais (CAR/SICAR) | SICAR's public WFS, `sicar:sicar_imoveis_ac` | 63,094 | outline by status: active teal, pending light grey, suspended violet, cancelled dark grey; from zoom 10 |
+
+- The CAR is self-declared: properties overlap, and the 5,660 cancelled ones
+  (of 63,094; 49,358 are active, 8,044 pending, 32 suspended) are only
+  flagged. The layer keeps the property code, status, condition, type, area,
+  municipality, fiscal modules and update date.
+- The IBAMA CSV also holds the name and CPF/CNPJ of each embargoed person and
+  the infraction and process numbers: none of them is copied. 1,072 more
+  embargoes in Acre have only a point and are left out.
+- INCRA's SIGEF parcels are not included: `acervofundiario.incra.gov.br` did
+  not resolve from the build host and SIGEF's downloads are not scriptable. The
+  settlements are INPE's copy of INCRA's layer, with no date stated.
+- Atlas imported 63,090 of the 63,094 CAR properties and all the others. The
+  4 it did not accept were not identified; 50 properties have self-intersecting
+  rings in SICAR's data, and Atlas took almost all of them.
+- The licences of these four sources were not checked.
+
+To rebuild, run `python pipeline/fundiario_layers.py work_fund` (a few minutes;
+`--ibama-csv` reuses the 170 MB national CSV if it is already on disk). It goes
+through curl, because SICAR's server fails the TLS handshake with Python's
+OpenSSL 3. Atlas' built-in browser reaches neither local files nor localhost,
+so upload the four files with Add data > Upload data (Atlas names each layer
+after its file), rename them with `HY.rename(file, HY.NAMES[key])`, run
+`HY.applyStyle(key)` for each and `await S.organize()`. In a regular browser,
+`await HY.load(url, [...])` and `HY.uploadAll([...])` do it from an http server
+that sends CORS headers.
+
 ### Atlas folders
 
-The project's layers sit in six folders, so that a whole group can be hidden
+The project's layers sit in seven folders, so that a whole group can be hidden
 or shown at once. Top to bottom:
 
 | Folder | Layers |
@@ -162,6 +201,7 @@ or shown at once. Top to bottom:
 | Pontos de interesse | Aeródromos, Escolas e saúde |
 | Vias e hidrografia | Estradas e ramais, Ruas urbanas, Rios e igarapés |
 | Desmatamento (INPE) | Alertas DETER, Desmatamento PRODES |
+| Fundiário e fiscalização | Focos de calor, Embargos, Assentamentos, Imóveis rurais (CAR) |
 | Limites e áreas protegidas | Terras Indígenas, Unidades de Conservação, Municípios, Limite do Acre |
 | Imagens CBERS-4A (2 m) | Datas das imagens, then the 33 scenes, newest first |
 | Fundo Sentinel-2 | The INPE mosaic (hidden) and EOX |
@@ -179,7 +219,7 @@ or shown at once. Top to bottom:
 - Folders, like the styles, go through Atlas' internal layer store.
 - The project opens on the Acre view: it is the map origin (project menu, "Set
   map origin", which also sets the project's cover image).
-- The credits on the map ([Attribution](#attribution)) are four stacked Atlas
+- The credits on the map ([Attribution](#attribution)) are five stacked Atlas
   text elements south of Acre, one line each, and show only while that spot is
   on screen (the initial view does). A text element has a single line: Enter
   inside it starts editing the geometry of its box instead of adding a line.
@@ -521,3 +561,7 @@ Hybrid map layers:
   (CNUC), July 2026.
 - Ministério da Infraestrutura / ANAC, registered public and private
   aerodromes.
+- Serviço Florestal Brasileiro, SICAR (Cadastro Ambiental Rural), public
+  consultation service; IBAMA open data, embargoed areas (without personal
+  data); INCRA settlements and INPE Queimadas fire hotspots, as published by
+  INPE's BDQueimadas geoserver. The licences of these four were not checked.
