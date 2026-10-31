@@ -713,8 +713,8 @@ built or uploaded:
 
 So it is possible, as a lower-grade patch: a per-scene translation (-62 m,
 +75 m), a pansharpening that reads the L2 files, and a layer marked as
-approximate. Whether that is better than the Sentinel-2 background there
-depends on what the map will be used for; it is not built.
+approximate. It was decided on 2026-10-31 not to build it: the cell stays on
+the Sentinel-2 background, so nothing in the map is placed tens of metres off.
 
 ## Rescale ranges
 
