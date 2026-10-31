@@ -41,9 +41,11 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/stats_original.txt` | Earlier per-scene 2-98 % ranges from INPE's originals, for reference. It predates [Scene choice](#scene-choice): it still has the 5 replaced scenes and not the 5 that replaced them. |
 | `pipeline/acre_scenes.py` | Intersects each scene's valid-data footprint with IBGE's boundary of Acre; `--unfused` reads scenes that have no fused original from their L4 DN band. |
 | `pipeline/check_bands.py` | Checks a scene's fused bands against INPE's unfused bands of the same pass; it flags the defective red band of [20251107_233_126](#defective-fused-scenes). Run it on every candidate scene. |
+| `pipeline/check_updates.py` | Monthly, read-only check of what changed upstream: newer and clearer fused scenes per cell, new DETER alerts, hotspots and CAR properties since each snapshot was built, and whether the live WMS layers and the service still answer (see [Monthly update check](#monthly-update-check)). |
 | `pipeline/fetch_scene.py` | Resumable single-connection download from INPE (If-Range, backoff, throughput cap). |
 | `pipeline/pansharpen_scene.py` | Builds a fused-like RGB scene from INPE's unfused L4 DN bands (SFIM pansharpening), for the cells with no usable fused scene (see [Cells without a fused scene](#cells-without-a-fused-scene)). |
 | `scenes_pansharpened.txt` | The scenes in use that are built that way. |
+| `snapshots.txt` | The date each snapshot layer of the Atlas map was built, read by `check_updates.py`. |
 | `scenes_rgb.txt` | The 12 scenes whose copy is RGB JPEG instead of YCbCr: 7 hazy fused ones and the 5 pansharpened ones (see [Compression](#compression)). |
 | `pipeline/compress_cog.py` | `write_stretched_cog`, the pipeline's stretched JPEG COG; also unstretched COG variants (`jpeg`, `jpeg_rgb`, `webp`) from an RGBA intermediate. |
 | `pipeline/process_all.py` | Batch: download (or pansharpen), stretch, compress, check, upload, one scene at a time; updates `stretch.txt`, and `stats.txt` for the pansharpened scenes. |
@@ -233,9 +235,38 @@ after its file), rename them with `HY.rename(file, HY.NAMES[key])`, run
 `await HY.load(url, [...])` and `HY.uploadAll([...])` do it from an http server
 that sends CORS headers.
 
+### MapBiomas Alerta layers
+
+Two live WMS layers of [MapBiomas Alerta](https://alerta.mapbiomas.org), whose
+deforestation alerts are validated on high-resolution images and published
+every week (generally on Tuesdays). They sit in the folder "Alertas MapBiomas":
+
+| Layer | WMS layer | Shows |
+|---|---|---|
+| Alertas validados (MapBiomas Alerta, ao vivo) | `mapbiomas-alertas:dashboard-alerts`, style `polygon` | the validated alerts of Brazil (540,089 on 2026-10-31), red outline |
+| Imóveis com alerta (MapBiomas Alerta, ao vivo) | `mapbiomas-alertas:mv_rural_properties_with_alerts_published`, style `rural_property` | the CAR properties with a published alert (448,677 in Brazil), orange outline |
+
+- They come from `https://maps.alerta.mapbiomas.org/geoserver`, the public
+  GeoServer behind the platform's map: no login. Connect with the
+  layer-specific URLs `.../geoserver/mapbiomas-alertas/<layer>/wms` (the
+  capabilities take 2-5 s). As far as the platform's pages say, its full
+  shapefile download and its API are for registered users; neither is used.
+- Atlas stores the declared bounding box (west bounds -73.8° and -73.5°), so
+  a strip of Acre west of it gets no tiles, as with the INPE fire layer.
+- Both start at zoom 8 (Layer panel, "Zoom visibility"): the national layers
+  are slow at low zoom and would cover the opening view in red.
+- The attributes (alert code, area, dates, crossings with conservation units,
+  indigenous lands and embargoes, CAR codes; for the properties: code, area,
+  type, state) hold no personal data.
+- Terms (<https://alerta.mapbiomas.org/termos-de-uso/>, read on 2026-10-31):
+  public, open and free under CC BY, citing the source as "MapBiomas Alerta –
+  Sistema de Validação e Refinamento de Alertas de Desmatamento com Imagens
+  de Alta Resolução: acessado em [data] através do link: [LINK]". The credit
+  line of the map says "alertas: MapBiomas Alerta (CC BY)".
+
 ### Atlas folders
 
-The project's layers sit in seven folders, so that a whole group can be hidden
+The project's layers sit in eight folders, so that a whole group can be hidden
 or shown at once. Top to bottom:
 
 | Folder | Layers |
@@ -243,6 +274,7 @@ or shown at once. Top to bottom:
 | Pontos de interesse | Aeródromos, Escolas e saúde |
 | Vias e hidrografia | Estradas e ramais, Ruas urbanas, Rios e igarapés |
 | Desmatamento (INPE) | Alertas DETER, Desmatamento PRODES |
+| Alertas MapBiomas | Alertas validados, Imóveis com alerta (live WMS) |
 | Fundiário e fiscalização | Focos de calor (mês atual ao vivo, 12 meses), Embargos, Assentamentos, Imóveis rurais (CAR) |
 | Limites e áreas protegidas | Terras Indígenas, Unidades de Conservação, Municípios, Limite do Acre |
 | Imagens CBERS-4A (2 m) | Datas das imagens, then the 38 scenes, newest first |
@@ -269,6 +301,54 @@ or shown at once. Top to bottom:
   Its size is fixed at the zoom it was created at (44.8 px there) and scales
   with the map zoom, so they were created at zoom 8 to read at 11.2 px in the
   zoom-6 initial view. The colour starts black; set it to `#ffffff`.
+
+## Atlas integrations
+
+Atlas lists 12 integrations (Integrations > View all). On 2026-10-31 the two
+that matter here were tried in this project, one import each; the test layers
+were deleted. Only NASA and ESA stay pinned in the right-hand menu (Overture
+Maps and Terrain tiles were unpinned).
+
+| Integration | Verdict |
+|---|---|
+| ESA, Sentinel-2 L2A (10 m, every ~5 days) | **Use, per asset.** Integrations > ESA > Sentinel-2 Level-2A, move the map to the area, set the dates (the last 30 days by default) and the maximum cloud, click an outlined footprint (the panel lists the images under the click with date and cloud), configuration "Visual", "Import STAC image". Atlas downloads and merges the whole ~110 km tile into a local raster of about 210 MB, so import only where it is needed and delete it afterwards. The 2026-10-25 scene (6 % cloud) showed the clearings and pastures of cell 235/126 as they are now, where CBERS has 2022, and it is the way to see the gaps between CBERS scenes. |
+| NASA, OPERA Land Disturbance Alert (30 m) | **Try on assets.** Same flow, with granules instead of footprints. The import is the raw alert band: Atlas draws it dark blue with no data black, so it needs a style (one colour per alert class) before it is readable. Compare it with DETER before trusting it for small clearings. |
+| ESA, Sentinel-1 radar; NASA, OPERA radar | Not tried. Radar sees through cloud and smoke, if they become the limit. |
+| USGS Landsat (30 m since 1984) | For the history of one area, for example whether a clearing predates July 2008, the cutoff of the Forest Code. |
+| Terrain tiles, Copernicus DEM | Slope, drainage and flooding, only if an analysis needs them. |
+| Overture Maps, OpenStreetMap | Not needed: roads, rivers and schools came from OSM already. |
+| USDA NAIP, Gårdskart, TomteData, Agenzia delle Entrate, Tiny Italy DEM, Global Wind Atlas | No use here: US, Norwegian and Italian data, and wind. |
+
+Atlas' storage limits and prices for imports were not checked.
+
+## Monthly update check
+
+`python pipeline/check_updates.py [--service-url URL]` (the pipeline
+environment; about 40 s) reads upstream and prints what changed since the map
+was built. It writes, uploads and deploys nothing.
+
+1. **Scenes:** for each cell, the fused scenes INPE published after the one in
+   use, measured on the overviews of INPE's originals (cloud by the rule of
+   `scene_stats.py`, haze as the dark level above the typical one). A newer
+   scene is an upgrade if it is clearer; for the 5 pansharpened cells, any
+   fused scene that is clear enough (10 % cloud, 15 levels of haze) is. Adopt
+   one only after `check_bands.py` and a render with its own contrast.
+2. **Snapshots:** DETER alerts, fire hotspots and CAR properties since the
+   dates in `snapshots.txt`, and the latest PRODES year. Update that file when
+   you rebuild a layer.
+3. **Live layers:** whether the INPE and MapBiomas WMS layers answer, and the
+   bounding box INPE declares for the fire layer.
+4. **Service:** `/health`, with `--service-url` or `$SERVICE_URL`.
+
+On 2026-10-31: cells 232/125, 233/125, 233/126, 237/123, 241/122 and 242/123
+have newer fused scenes and none is clearer than the one in use; the 5
+pansharpened cells have no fused scene yet; no new DETER alert, hotspot or CAR
+property since the layers were built; PRODES is at 2025; the three live WMS
+layers and the service answer.
+
+A local scheduled task, `acre-map-monthly-check`, runs it on the 1st of each
+month at 09:00 and reports the result; it changes nothing. Disable or delete
+it in the app's scheduled tasks.
 
 ## Service
 
@@ -663,6 +743,10 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
   service's) and matched it again a few minutes later, on later requests. After
   any recompression run `S.runVerify()` (see `atlas_refresh.js`) twice, a few
   minutes apart.
+- **Live WMS layers (INPE fires, MapBiomas):** the first tiles after a jump
+  to a new zoom come from the server in 1-5 s, and until they arrive the map
+  shows the coarser tile of the level above scaled up: the fire squares look
+  huge for a few seconds. One hotspot is a 7 px square at every scale.
 - **Two service hostnames:** the service answers on both Cloud Run URLs
   (`status.url` and the `<service>-<project number>.<region>.run.app` one). The
   Atlas layers use the second for 31 scenes and the first for 7 (the 2 replaced
@@ -698,6 +782,8 @@ commercial use.
 | Fire hotspots (INPE Queimadas), 12-month snapshot and live WMS layer | none stated | the portal's open-data page and the two documentation PDFs mention no licence or terms | Not licensed; ask INPE |
 | Settlements (INCRA via INPE) | none found | INPE's geoserver states no constraints; INCRA's servers were unreachable | Not licensed; ask INCRA/INPE |
 | PRODES, DETER, indigenous lands (TerraBrasilis) | secondary sources say CC BY-SA 4.0; not confirmed | TerraBrasilis pages are not readable without a browser | Unconfirmed; CC BY-SA would be share-alike |
+| MapBiomas Alerta (live WMS) | CC BY, citing the source | the platform's terms of use, <https://alerta.mapbiomas.org/termos-de-uso/> | Yes, with the citation |
+| Sentinel-2 and OPERA imports (Atlas integrations, not in the map now) | open: Copernicus (ESA) and NASA data | not reviewed beyond that | Not reviewed; check before publishing an import |
 | IBGE boundaries | no explicit licence found | search only | Unconfirmed |
 | ANAC aerodromes, FUNAI | not checked | INDE's service lists "no constraints", which is not a licence | Unconfirmed |
 
@@ -735,6 +821,10 @@ Hybrid map layers:
   (CNUC), July 2026.
 - Ministério da Infraestrutura / ANAC, registered public and private
   aerodromes.
+- MapBiomas Alerta – Sistema de Validação e Refinamento de Alertas de
+  Desmatamento com Imagens de Alta Resolução: acessado em 2026-10-31 através
+  de <https://alerta.mapbiomas.org> ([CC BY](https://alerta.mapbiomas.org/termos-de-uso/)):
+  the two live layers of the folder "Alertas MapBiomas".
 - Serviço Florestal Brasileiro, SICAR (Cadastro Ambiental Rural), public
   consultation service; IBAMA open data, embargoed areas (without personal
   data); INCRA settlements and INPE Queimadas fire hotspots (snapshot and live
