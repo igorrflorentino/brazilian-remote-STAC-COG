@@ -6,6 +6,7 @@ Four layers, written to <OUT_DIR>/<key>.geojson (hybrid_layers.js uploads them):
   assentamentos INCRA settlements, as published by INPE's BDQueimadas geoserver
   embargos      IBAMA embargoed areas (open-data CSV of all Brazil, UF = AC)
   focos         INPE fire hotspots of the last 12 months (reference satellite)
+  sigef         INCRA's certified parcels, from a shapefile downloaded by hand (--sigef-shp)
 
 Geometries are simplified with Douglas-Peucker and rounded to 5 decimals, like
 the other hybrid layers. Only non-personal attributes are kept: the IBAMA CSV
@@ -14,7 +15,13 @@ infraction or process numbers are copied. The CAR layer carries every status
 (active, pending, suspended, cancelled): it is self-declared data, so the
 properties overlap and the cancelled ones are only flagged.
 
-Usage: python fundiario_layers.py <OUT_DIR> [--only car,embargos,...] [--ibama-csv FILE]
+The SIGEF parcels are not downloaded here: the Acervo Fundiário hosts that served the shapefiles
+(acervofundiario.incra.gov.br, certificacao.incra.gov.br) do not resolve any more, and the SIGEF
+consultation needs a gov.br account of silver or gold level. Download the Acre shapefile with your
+account and pass it with --sigef-shp. The holder is not in the layer: the technical person in charge
+(rt), the ART, the registry numbers and the name of the area are dropped (--keep-names keeps the last).
+
+Usage: python fundiario_layers.py <OUT_DIR> [--only car,embargos,...] [--ibama-csv FILE] [--sigef-shp FILE]
 Without --ibama-csv the national CSV (about 170 MB) is downloaded into OUT_DIR.
 Requests go through curl: SICAR's server fails the TLS handshake with Python's
 OpenSSL 3, and curl does not.
@@ -24,12 +31,14 @@ import argparse
 import csv
 import datetime as dt
 import json
+import math
 import subprocess
 import sys
 import time
 import urllib.parse
 from pathlib import Path
 
+import shapefile  # pyshp
 from shapely import wkt
 from shapely.geometry import mapping, shape
 
@@ -190,6 +199,55 @@ def build_focos() -> dict:
     return collection(feats)
 
 
+def pick(props: dict, *prefixes: str):
+    """First value whose lower-cased field name starts with one of the prefixes: DBF names are cut at 10 characters."""
+    lowered = {k.lower(): v for k, v in props.items()}
+    for prefix in prefixes:
+        for name, value in lowered.items():
+            if name.startswith(prefix):
+                return value
+    return None
+
+
+def area_ha(geometry) -> float:
+    """Area in hectares of a lon/lat geometry, by the local scale of a degree (good to a fraction of a per cent here)."""
+    lat = geometry.centroid.y
+    return round(geometry.area * (111_320 * math.cos(math.radians(lat))) * 111_320 / 10_000, 2)
+
+
+def build_sigef(path: Path, keep_names: bool = False, uf: str = "AC") -> dict:
+    """SIGEF parcels of a state from INCRA's shapefile, without the people: no technician, ART or registry number."""
+    reader = shapefile.Reader(str(path))
+    prj = path.with_suffix(".prj")
+    if prj.exists() and "PROJCS" in prj.read_text(errors="ignore")[:200]:
+        sys.exit(f"{prj.name} is a projected CRS; this reads SIRGAS 2000 / WGS 84 degrees (export it in geographic coordinates)")
+    names = [f[0] for f in reader.fields[1:]]
+    feats, other_state = [], 0
+    for sr in reader.iterShapeRecords():
+        props = dict(zip(names, sr.record, strict=True))
+        state = pick(props, "uf_id", "uf")
+        if state and str(state).upper() not in (uf, "12"):  # the file may hold other states; 12 is the IBGE code of Acre
+            other_state += 1
+            continue
+        geom = shape(sr.shape.__geo_interface__)
+        if geom.is_empty:
+            continue
+        out = {
+            "codigo": pick(props, "parcela_co", "parcela"),
+            "imovel": pick(props, "codigo_imo", "cod_imov"),
+            "situacao": pick(props, "situacao_i", "situ_imov", "situacao"),
+            "status": pick(props, "status"),
+            "certificado_em": date_br(str(pick(props, "data_aprov") or "")) if pick(props, "data_aprov") else None,
+            "municipio": pick(props, "municipio_", "cod_mun", "municipio"),
+            "area_ha": area_ha(geom),
+        }
+        if keep_names:
+            out["nome_area"] = pick(props, "nome_area")
+        feats.append(feature(out, clean(geom, 0.00005)))
+    print(f"  sigef: {len(feats)} parcels kept, {other_state} of other states left out", flush=True)
+    return collection(feats)
+
+
 def download(url: str, dest: Path) -> None:
     print(f"  downloading {url} -> {dest}", flush=True)
     subprocess.run(["curl", "-sSf", "-m", "1800", "-o", str(dest), url], check=True)
@@ -200,6 +258,8 @@ def main() -> None:
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--only", default="car,assentamentos,embargos,focos", help="comma-separated layer keys")
     parser.add_argument("--ibama-csv", type=Path, help="national termo_embargo.csv, if already downloaded")
+    parser.add_argument("--sigef-shp", type=Path, help="INCRA's SIGEF shapefile, downloaded by hand (for --only sigef)")
+    parser.add_argument("--keep-names", action="store_true", help="keep the name of the area of the SIGEF parcels (it can be a person's name)")
     args = parser.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     keys = [k.strip() for k in args.only.split(",") if k.strip()]
@@ -217,6 +277,10 @@ def main() -> None:
             data = build_embargos(csv_path)
         elif key == "focos":
             data = build_focos()
+        elif key == "sigef":
+            if not args.sigef_shp:
+                sys.exit("--only sigef needs --sigef-shp FILE (see the docstring)")
+            data = build_sigef(args.sigef_shp, args.keep_names)
         else:
             sys.exit(f"Unknown layer {key!r}")
         out = args.out_dir / f"{key}.geojson"

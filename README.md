@@ -56,7 +56,7 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/compare_served.py` | Compares the service's tiles with INPE's lossless originals: the measurements in [Compression](#compression). |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
 | `pipeline/hybrid_layers.js` | Browser-console script that builds the [hybrid map layers](#hybrid-map-layers) and uploads them to Atlas. |
-| `pipeline/fundiario_layers.py` | Builds the four [land-tenure and enforcement layers](#land-tenure-and-enforcement-layers) (CAR, settlements, IBAMA embargoes, fire hotspots) as GeoJSON from their public sources. |
+| `pipeline/fundiario_layers.py` | Builds the four [land-tenure and enforcement layers](#land-tenure-and-enforcement-layers) (CAR, settlements, IBAMA embargoes, fire hotspots) as GeoJSON from their public sources, and INCRA's SIGEF parcels from a shapefile downloaded by hand (`--only sigef --sigef-shp FILE`). |
 | `pipeline/atlas_refresh.js` | Browser-console script that swaps the Atlas map's WMTS layers for new links, files the new scenes into their [folder](#atlas-folders) by date and checks them pixel by pixel against the service. `S.organize()` files every layer into the folders. |
 
 ## WMTS links
@@ -151,10 +151,26 @@ services. As built on 2026-10-29 (the project now groups them in
   so the map has no separate places layer.
 - Atlas holds 55,315 of the 55,395 PRODES features built above, and a few of
   them are `MultiLineString` among the polygons (shapes the simplification or
-  the import collapsed; the cause was not looked into). Every other layer has
-  as many rows in Atlas as in the table, except the CAR one (below).
-- DETER and PRODES are snapshots. To refresh them, rebuild and upload those
-  layers with `pipeline/hybrid_layers.js`, then delete the old ones.
+  the import collapsed). Every other layer has as many rows in Atlas as in the
+  table, except the CAR one (below). Where the 80 went, measured on 2026-10-31
+  against TerraBrasilis' own answers:
+  - PRODES has 57,039 polygons in Acre for 2016-2025. The build drops 1,644 of
+    them, slivers that have no ring left after the simplification (0.153 km²,
+    0.0005 % of the area), which leaves the 55,395.
+  - 5,418 of the 55,395 are invalid once simplified (3,042 self-intersections,
+    2,367 ring self-intersections, 9 disconnected interiors), and the layer
+    keeps them as they are. Repaired with GEOS `make_valid`, every one becomes
+    a polygon again and keeps at least 99.4 % of its area (19 collapse to
+    lines).
+  - Duplicates are not the cause (none by id, by geometry or by year, area and
+    date). Atlas does not say which 80 it refused, so they were not
+    identified. Their area is not known, but the typical feature has 0.1 ha
+    (median 0.00097 km²), so the loss is at the level of the 0.0005 % above. A
+    rebuild with the polygons repaired first (`make_valid`) is the way to find
+    out; it is not worth doing until the layer is rebuilt for another reason.
+- The DETER 12-month layer and PRODES are snapshots. To refresh them, rebuild
+  and upload those layers with `pipeline/hybrid_layers.js`, then delete the old
+  ones. The [live DETER layer](#deter-live-layer) needs no rebuild.
 - "Datas das imagens" lists the scenes of the map, so rebuild it whenever the
   scene set changes (`HY.run(['cenas'])`, `HY.uploadAll(['cenas'])`,
   `HY.applyStyle('cenas')`, then delete the old layer): it reads the layer names
@@ -189,13 +205,23 @@ services. Like DETER and PRODES they are snapshots; these were built on
 - The IBAMA CSV also holds the name and CPF/CNPJ of each embargoed person and
   the infraction and process numbers: none of them is copied. 1,072 more
   embargoes in Acre have only a point and are left out.
-- INCRA's SIGEF parcels are not included: `acervofundiario.incra.gov.br` did
-  not resolve from the build host and SIGEF's downloads are not scriptable. The
-  file has to be downloaded by hand from INCRA's land-holdings portal (the
-  certified parcels of Acre); `fundiario_layers.py` can then be extended to read
-  it, keeping the parcel code, status, area, municipality and certification date
-  and dropping the holder's name and CPF/CNPJ, as it does for IBAMA. The
-  settlements are INPE's copy of INCRA's layer, with no date stated.
+- INCRA's SIGEF parcels (the certified rural parcels) are not included, because
+  the file cannot be fetched by a script. Checked on 2026-10-31: the download
+  hosts of INCRA's land-holdings collection (`acervofundiario.incra.gov.br`
+  and the others tried) did not resolve, and SIGEF's consultation asks for a
+  gov.br login of silver or gold level and its firewall refuses scripted
+  requests. No login was used or bypassed. The shapefile has to be downloaded by
+  hand, signed in with gov.br; then
+  `python pipeline/fundiario_layers.py work_fund --only sigef --sigef-shp FILE`
+  turns it into `sigef_ac.geojson`: parcels of Acre only (`uf_id` AC or 12),
+  with the parcel code, property code, situation, status, certification date,
+  municipality and area in hectares. The holder's name, the responsible
+  technician and the ART and registry fields are dropped, as the owner data is
+  for IBAMA, unless `--keep-names` is given. The shapefile must be in
+  geographic coordinates (SIRGAS 2000 or WGS 84); a projected one stops with a
+  message. Upload it like the other layers (`HY.rename`, style, `S.organize`).
+  Its licence is not confirmed (see [Licences](#licences)). The settlements are
+  INPE's copy of INCRA's layer, with no date stated.
 - Atlas imported 63,090 of the 63,094 CAR properties and all the others. The
   4 it did not accept were not identified; 50 properties have self-intersecting
   rings in SICAR's data, and Atlas took almost all of them.
@@ -264,6 +290,39 @@ every week (generally on Tuesdays). They sit in the folder "Alertas MapBiomas":
   de Alta Resolução: acessado em [data] através do link: [LINK]". The credit
   line of the map says "alertas: MapBiomas Alerta (CC BY)".
 
+### DETER live layer
+
+**Alertas DETER, histórico desde 2016 (INPE, ao vivo)** is a WMS connection to
+TerraBrasilis (`https://terrabrasilis.dpi.inpe.br/geoserver/deter-amz/wms`, layer
+`deter_amz`, "DETER Daily - Anonymous", style `deter_amz_pt-br`). It follows
+INPE's publication with no rebuild: the newest month of its time dimension was
+2026-10 on 2026-10-31. It sits in the folder "Desmatamento (INPE)", under the
+12-month snapshot, and starts at zoom 9.
+
+- It shows every alert since 2016-08 of the whole Legal Amazon, not the last
+  12 months. Atlas cannot narrow it: it keeps no query string of the connection
+  URL (a `CQL_FILTER` in it was ignored; the tile was identical to the
+  unfiltered one) and has no TIME control, and a WMS without TIME answers with
+  the whole range. TerraBrasilis' filters take fixed dates only: a relative
+  period (`P1Y/PRESENT`, `currentDate()`) answers HTTP 400. So the snapshot
+  stays, for the last year as vectors that can be clicked and used in analyses
+  (a WMS layer cannot be), and this layer adds the history and the weeks since
+  the snapshot was built.
+- The service's own filter keeps alerts of at least 6.25 ha (`areatotalkm >=
+  0.0625` in its description). The snapshot comes from the same layer through
+  WFS, so it should be the same set. WFS has no such column, and 1,100 of its
+  Acre rows since 2016 have less than 6.25 ha in `areamunkm`, most likely the
+  parts of larger alerts that cross a municipality line.
+- The legend is INPE's: cicatriz de queimada, corte seletivo (also
+  desordenado and geométrico), degradação, desmatamento com vegetação,
+  desmatamento corte raso, mineração. It is clickable (GetFeatureInfo answers
+  with the class, date, area, municipality, state and sensor).
+- Atlas stores the declared box (west bound -73.67°), so a strip of Acre west
+  of it gets no tiles, as with the other live layers. Add it by hand like them
+  (Add data > Connections > OGC services, the URL above, style `deter_amz_pt-br`
+  in the dialog); then rename it, file it with `await S.organize()` and set the
+  zoom in the Layer panel.
+
 ### Atlas folders
 
 The project's layers sit in eight folders, so that a whole group can be hidden
@@ -273,9 +332,9 @@ or shown at once. Top to bottom:
 |---|---|
 | Pontos de interesse | Aeródromos, Escolas e saúde |
 | Vias e hidrografia | Estradas e ramais, Ruas urbanas, Rios e igarapés |
-| Desmatamento (INPE) | Alertas DETER, Desmatamento PRODES |
+| Desmatamento (INPE) | Alertas DETER (12 meses, histórico ao vivo), Desmatamento PRODES |
 | Alertas MapBiomas | Alertas validados, Imóveis com alerta (live WMS) |
-| Fundiário e fiscalização | Focos de calor (mês atual ao vivo, 12 meses), Embargos, Assentamentos, Imóveis rurais (CAR) |
+| Fundiário e fiscalização | Focos de calor (mês atual ao vivo, 12 meses), Embargos, Assentamentos, Imóveis rurais (CAR), Parcelas certificadas (SIGEF, once its file is uploaded) |
 | Limites e áreas protegidas | Terras Indígenas, Unidades de Conservação, Municípios, Limite do Acre |
 | Imagens CBERS-4A (2 m) | Datas das imagens, then the 38 scenes, newest first |
 | Fundo Sentinel-2 | The INPE mosaic (hidden) and EOX |
@@ -336,15 +395,16 @@ was built. It writes, uploads and deploys nothing.
 2. **Snapshots:** DETER alerts, fire hotspots and CAR properties since the
    dates in `snapshots.txt`, and the latest PRODES year. Update that file when
    you rebuild a layer.
-3. **Live layers:** whether the INPE and MapBiomas WMS layers answer, and the
-   bounding box INPE declares for the fire layer.
+3. **Live layers:** whether the INPE (fires, DETER) and MapBiomas WMS layers
+   answer, the bounding box each declares and the newest month of DETER's time
+   dimension.
 4. **Service:** `/health`, with `--service-url` or `$SERVICE_URL`.
 
 On 2026-10-31: cells 232/125, 233/125, 233/126, 237/123, 241/122 and 242/123
 have newer fused scenes and none is clearer than the one in use; the 5
 pansharpened cells have no fused scene yet; no new DETER alert, hotspot or CAR
-property since the layers were built; PRODES is at 2025; the three live WMS
-layers and the service answer.
+property since the layers were built; PRODES is at 2025; the four live WMS
+layers answer (DETER's time dimension runs to 2026-10) and so does the service.
 
 A scheduled task of the Claude app, `acre-map-monthly-check`, runs it on the 1st
 of each month at 09:00 and reports the result in Portuguese. It reads
@@ -597,7 +657,8 @@ measured the same way for both, in EPSG:5880). Their limits:
   fused scene, and the tone of two scenes of different dates differs anyway.
 - 241/123 has a gap in the data (the scene is two strips); the Sentinel-2
   background shows there. 235/127 has no scene in the unfused collection
-  either and stays on the background.
+  either and stays on the background; what could be done is in
+  [Cell 235/127](#cell-235127).
 - 241/124 is lighter and greener on its left third than on the rest: a smooth
   gradient across the swath (the red band falls from 50 to 30 stored levels),
   more like haze or smoke than a sensor step. It shows in the overview, less at
@@ -620,6 +681,40 @@ GB), about 4 min to pansharpen (3 threads, 3.0 GB of UInt8 with ZSTD), 5-6 min
 to compress and 2-4 min to upload. The pansharpened file needs overviews
 (`add_overviews`): without them `linear_bounds` decodes the whole scene once per
 band (more than 10 minutes). Peak disk use is about 12 GB.
+
+#### Cell 235/127
+
+After the 38 scenes, 8,192 km² of Acre (4.8 %) are uncovered, in 17 pieces. The
+largest, 4,204 km² around 69.6°W 10.3°S, is where cell 235/127 lies; the second,
+2,057 km² around 73.4°W 8.0°S in the north-west corner, is a different gap that
+235/127 does not reach. Neither INPE's fused collection nor its orthorectified
+L4 collection has 235/127. Its **system-corrected** L2 collection
+(`CB4A-WPM-L2-DN-1`, CC BY 4.0) has 34 scenes of it, 2023-06-13 to 2026-10-04,
+and could be pansharpened like the L4 ones. Measured on 2026-10-31, nothing
+built or uploaded:
+
+- **Date.** On the north 40 % of the scene (the Acre side), 2026-09-03 has
+  0.1 % cloud and a dark level of 83/114/155 DN (the L4 scenes above: 70-72/
+  102/142-144 when clear). Next come 2025-12-29 (2.2 %), 2025-07-27 (3.0 %) and
+  2025-09-27 (5.2 %); 2026-10-04 has 15.8 %. Only 61 % of the scene's box has
+  data.
+- **Coverage.** The valid part of the 2026-09-03 scene covers 2,579 km² of Acre,
+  1,817 km² of them in the uncovered area (43 % of that 4,204 km² piece): about
+  1.1 points, 95.2 % to 96.3 %. The other 2,387 km² of the piece stay open.
+- **Geolocation, the catch.** L2 is not orthorectified, and it does not sit
+  where the L4 scenes do. Against the neighbouring 234/127 (2026-09-08, 731
+  windows) it must move 62 m west and 75 m north (spread 3 and 1 m); against
+  235/126 (27 windows), 64 m west and 43 m north. The two references differ by
+  about 30 m in the north, so one translation cannot match both, and relief
+  moves pixels beyond that. The seam with its neighbours would be off by tens of
+  metres, and so would anything measured on it, against the 2 m of the rest.
+- **Not an option:** the MUX camera (16.5 m) has the cell, but is far below the
+  2 m of the map.
+
+So it is possible, as a lower-grade patch: a per-scene translation (-62 m,
++75 m), a pansharpening that reads the L2 files, and a layer marked as
+approximate. Whether that is better than the Sentinel-2 background there
+depends on what the map will be used for; it is not built.
 
 ## Rescale ranges
 
@@ -786,7 +881,8 @@ commercial use.
 | CAR (SICAR's WFS) | none stated | CMRI decision 217/2022: public CAR data are available through the public consultation and the WMS/WFS geoserver, and says nothing about reuse | Not licensed; ask SFB |
 | Fire hotspots (INPE Queimadas), 12-month snapshot and live WMS layer | none stated | the portal's open-data page and the two documentation PDFs mention no licence or terms | Not licensed; ask INPE |
 | Settlements (INCRA via INPE) | none found | INPE's geoserver states no constraints; INCRA's servers were unreachable | Not licensed; ask INCRA/INPE |
-| PRODES, DETER, indigenous lands (TerraBrasilis) | secondary sources say CC BY-SA 4.0; not confirmed | TerraBrasilis pages are not readable without a browser | Unconfirmed; CC BY-SA would be share-alike |
+| SIGEF certified parcels (INCRA; not in the map yet) | not checked: the portal could not be read without a gov.br login | | Read the terms shown at the download before publishing the layer |
+| PRODES, DETER (12-month snapshot and live WMS layer), indigenous lands (TerraBrasilis) | secondary sources say CC BY-SA 4.0; not confirmed | TerraBrasilis pages are not readable without a browser | Unconfirmed; CC BY-SA would be share-alike |
 | MapBiomas Alerta (live WMS) | CC BY, citing the source | the platform's terms of use, <https://alerta.mapbiomas.org/termos-de-uso/> | Yes, with the citation |
 | Sentinel-2 and OPERA imports (Atlas integrations, not in the map now) | open: Copernicus (ESA) and NASA data | not reviewed beyond that | Not reviewed; check before publishing an import |
 | IBGE boundaries | no explicit licence found | search only | Unconfirmed |

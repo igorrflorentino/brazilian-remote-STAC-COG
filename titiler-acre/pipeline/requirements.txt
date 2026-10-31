@@ -3,6 +3,8 @@ rio-tiler==9.4.12
 shapely==2.2.0
 # pansharpen_scene.py (it also comes with scikit-image, but that one is optional)
 scipy==1.18.1
+# fundiario_layers.py reads INCRA's SIGEF shapefile with it (pure Python)
+pyshp==3.1.6
 # Only needed by compare_quality.py and compare_served.py
 scikit-image==0.26.0
 pillow==13.0.0

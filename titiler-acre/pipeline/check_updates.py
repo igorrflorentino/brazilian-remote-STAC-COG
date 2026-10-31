@@ -10,8 +10,9 @@ Four sections, meant for a monthly run:
    still has to pass `check_bands.py` and be rendered with its own contrast before it is adopted.
 2. Snapshots. How many DETER alerts, fire hotspots and CAR properties exist upstream since the date
    each layer was built (snapshots.txt), and the latest PRODES year.
-3. Live layers. Whether the INPE and MapBiomas WMS layers of the Atlas map still answer, and the
-   bounding box INPE declares for the fire layer (Atlas never asks for tiles outside it).
+3. Live layers. Whether the INPE (fires, DETER) and MapBiomas WMS layers of the Atlas map still
+   answer, the bounding box they declare (Atlas never asks for tiles outside it) and, for DETER,
+   the newest month of its time dimension.
 4. The service, if --service-url (or $SERVICE_URL) is given: /health.
 
 Usage: python check_updates.py [--service-url URL] [--no-quality] [--json FILE]
@@ -52,6 +53,7 @@ INPE_FOCOS = "https://terrabrasilis.dpi.inpe.br/queimadas/geoserver/ows"
 SICAR = "https://geoserver.car.gov.br/geoserver/sicar/ows"
 LIVE_WMS = {
     "INPE focos, mês atual": "https://terrabrasilis.dpi.inpe.br/queimadas/geoserver/dados_abertos/focos_mesatual_br_satref/wms",
+    "INPE DETER, histórico": "https://terrabrasilis.dpi.inpe.br/geoserver/deter-amz/wms",
     "MapBiomas alertas": "https://maps.alerta.mapbiomas.org/geoserver/mapbiomas-alertas/dashboard-alerts/wms",
     "MapBiomas imóveis com alerta": "https://maps.alerta.mapbiomas.org/geoserver/mapbiomas-alertas/mv_rural_properties_with_alerts_published/wms",
 }
@@ -71,6 +73,12 @@ def cell_of(scene: str) -> str:
 
 def date_of(scene: str) -> str:
     return scene.split("_", 1)[0]
+
+
+def last_time(capabilities: str) -> str | None:
+    """Latest instant of the layer's `time` dimension in a WMS capabilities document, as YYYY-MM-DD."""
+    m = re.search(r'<Dimension[^>]*name="time"[^>]*>([^<]+)</Dimension>', capabilities)
+    return m[1].split(",")[-1].strip()[:10] if m else None
 
 
 def cloud_and_haze(a: np.ndarray) -> dict:
@@ -257,7 +265,8 @@ def live_section() -> list[str]:
         try:
             x = get(f"{base}?service=WMS&version=1.3.0&request=GetCapabilities", timeout=90).decode("utf-8", "ignore")
             west = re.search(r"<westBoundLongitude>([-\d.]+)</westBoundLongitude>", x)
-            out.append(f"  {name}: answers (declared west bound {float(west[1]):.2f}°)" if west else f"  {name}: answers")
+            newest = last_time(x)
+            out.append(f"  {name}: answers" + (f" (declared west bound {float(west[1]):.2f}°)" if west else "") + (f", time dimension up to {newest}" if newest else ""))
         except Exception as e:
             out.append(f"  {name}: DOES NOT ANSWER ({type(e).__name__})")
     return out
