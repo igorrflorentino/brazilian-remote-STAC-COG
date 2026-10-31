@@ -179,7 +179,9 @@ services. Like DETER and PRODES they are snapshots; these were built on
 - Atlas imported 63,090 of the 63,094 CAR properties and all the others. The
   4 it did not accept were not identified; 50 properties have self-intersecting
   rings in SICAR's data, and Atlas took almost all of them.
-- The licences of these four sources were not checked.
+- What was found about the licences of these four sources is in
+  [Licences](#licences): IBAMA's is open, and none is stated for the other
+  three.
 
 To rebuild, run `python pipeline/fundiario_layers.py work_fund` (a few minutes;
 `--ibama-csv` reuses the 170 MB national CSV if it is already on disk). It goes
@@ -533,6 +535,30 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
   carry no egress charge. A budget alert watches the project; it notifies, it
   does not cap spending.
 
+## Licences
+
+What each source's own catalogue or service says, read on 2026-10-31. It is a
+reading of the metadata, not legal advice; check with a lawyer before
+commercial use.
+
+| Source | Licence found | Where | Commercial use |
+|---|---|---|---|
+| CBERS-4A WPM, fused (INPE/BDC) | CC BY 4.0 | `license` of the BDC STAC collection | Yes, with attribution; say the copies were changed |
+| INPE Sentinel-2 mosaic | "proprietary", pointing to the Copernicus Sentinel Data Legal Notice | BDC STAC collection | Under that notice (its text was not read here) |
+| EOX Sentinel-2 cloudless 2025 | CC BY-NC-SA 4.0 | EOX's release notes and pricing page | **No.** EOX sells a commercial licence (cloudless.eox.at) |
+| OpenStreetMap layers | ODbL | not rechecked | Yes, with attribution; share-alike for derived databases |
+| IBAMA embargoes | catalogue: "Outra (Aberta)" for the CSV dataset, ODbL for the polygon shapefile dataset | `dadosabertos.ibama.gov.br` CKAN API | Yes per the catalogue; ODbL share-alike for the shapefile |
+| CNUC, MMA | CC BY | `dados.mma.gov.br` CKAN API | Yes, with attribution |
+| CAR (SICAR's WFS) | none stated | CMRI decision 217/2022: public CAR data are available through the public consultation and the WMS/WFS geoserver, and says nothing about reuse | Not licensed; ask SFB |
+| Fire hotspots (INPE Queimadas) | none stated | the portal's open-data page and the two documentation PDFs mention no licence or terms | Not licensed; ask INPE |
+| Settlements (INCRA via INPE) | none found | INPE's geoserver states no constraints; INCRA's servers were unreachable | Not licensed; ask INCRA/INPE |
+| PRODES, DETER, indigenous lands (TerraBrasilis) | secondary sources say CC BY-SA 4.0; not confirmed | TerraBrasilis pages are not readable without a browser | Unconfirmed; CC BY-SA would be share-alike |
+| IBGE boundaries | no explicit licence found | search only | Unconfirmed |
+| ANAC aerodromes, FUNAI | not checked | INDE's service lists "no constraints", which is not a licence | Unconfirmed |
+
+Share-alike (ODbL, and CC BY-SA if confirmed) matters if the map or its data
+are published; for internal use it matters less.
+
 ## Attribution
 
 Imagery: INPE / Brazil Data Cube, `CB4A-WPM-PCA-FUSED`,
@@ -564,4 +590,4 @@ Hybrid map layers:
 - Serviço Florestal Brasileiro, SICAR (Cadastro Ambiental Rural), public
   consultation service; IBAMA open data, embargoed areas (without personal
   data); INCRA settlements and INPE Queimadas fire hotspots, as published by
-  INPE's BDQueimadas geoserver. The licences of these four were not checked.
+  INPE's BDQueimadas geoserver. See [Licences](#licences) for their terms.
