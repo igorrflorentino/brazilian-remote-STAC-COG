@@ -614,6 +614,49 @@ the pan at 2 m and the blue, green, red and near-infrared bands at 8 m.
   [20251107_233_126](#defective-fused-scenes) is not expected here: that was
   a flaw of INPE's PCA fusion, these bands come straight from the L4 file, and
   the result shows no coloured fringes.
+- **SFIM against Brovey.** QGIS' and GDAL's pansharpening (the one in the
+  ClickGeo tutorial on CBERS-4A, <https://youtu.be/ggGKJO_K0vc>) is a weighted
+  Brovey transform: every band times pan over a weighted sum of the bands. Both
+  methods scale the three colour bands by one factor per pixel, so the hue is the
+  same; they differ in that factor. SFIM's is the pan over its own local mean,
+  with mean 1, so each 8 m pixel keeps its brightness. Brovey's is the pan over
+  a mix of the bands, which is right only if the mix matches the pan's
+  sensitivity (it covers the near infrared). Measured on 5 windows of 3 km, from
+  cells 235/126 (2022-06-06) and 238/124 (2022-06-22), with the pan and the four
+  bands (R, G, B, NIR) read from INPE's L4 files, against the real 8 m bands:
+  - With the 4 bands at equal weights (the tool's usual use, as the video does
+    it; GDAL's own default was not found documented), the result's 4 x 4 block
+    means are 13 % too bright on average (17 % rms error against the 8 m bands,
+    10.7 % once that gain is removed, which a per-scene stretch does anyway);
+    SFIM's is 4.2 %.
+  - With weights fitted to each window by least squares, Brovey gets to 9.3 %,
+    and Wald's protocol (fuse the pan at 8 m and the bands at 32 m, compare with
+    the real 8 m) gives it the same ERGAS as SFIM, 3.16 against 3.13. The
+    fitted weights are not stable (R 0 to 0.56, G 0 to 0.11, B 0.02 to 0.49, NIR
+    0.33 to 0.43), so they would need a calibration per scene; with RGB only they
+    are worse (17.7 %, ERGAS 4.5), since the pan sees the near infrared.
+  - Brovey keeps a little more of the pan's detail: the correlation of the
+    high-pass luminance with the pan's is 0.98 (equal weights) against 0.94 for
+    SFIM, and its local contrast is 94 % of the pan's against 88 %. In the
+    crops the three results show the same objects; Brovey is a little crisper.
+  - Not a reason to change. The check also confirmed that `sharpen()` equals the
+    float SFIM written separately for the test, to 1 DN.
+  The windows were picked by texture (high, median, low) from the scenes; a
+  window with no blue data was left out (next item), so the sample is small and
+  it is two cells only.
+- **Edge strips with no blue or green.** In each of the five L4 scenes the blue
+  band covers less than the red, and the green a little less too: a strip along
+  one edge of the scene, 195 km² in 235/126, 238/124 and 239/124 and 238 km² in
+  241/123 (measured on the whole scenes, as a share of the red footprint: 2.2 %
+  and 3.5 %). `sharpen()` writes 0 wherever one of the three bands is 0, so the
+  published scenes have no data there and the Sentinel-2 background shows (on the
+  service, the z12 tiles over the 235/126 strip, around 69.09°W 9.93°S, are
+  0 % opaque, 23-65 % and 100 % from north to south). The coverage above was
+  measured on the red band alone; with the three bands the 38 scenes cover
+  **95.13 %** of Acre, not 95.21 % (8,326 km² uncovered in 19 pieces, against
+  8,192 in 17: the neighbouring scenes cover most of the strips). It is not
+  corrected. A fix would fill the missing band from the others, with a
+  regression against the pan, and would paint colours that were not measured.
 - **Scale.** The L4 bands are in DN, three times INPE's fused values. The DN
   are multiplied by 0.32, the median of the gains of four fused scenes against
   their own unfused bands (0.25-0.40: INPE rescales each scene on its own), and
@@ -648,7 +691,9 @@ For reference, the dark level of a typical clear fused scene (40/52/70) is about
 
 With them the 38 scenes cover **95.2 %** of Acre, against 82.0 % for the 33
 fused ones (the union of the valid-data footprints inside IBGE's boundary,
-measured the same way for both, in EPSG:5880). Their limits:
+measured the same way for both, in EPSG:5880, on the red band of the
+pansharpened ones; 95.13 % with the three bands, see "Edge strips" below). Their
+limits:
 
 - They are 4-6 years older than the others (2023-2026): clearings and
   buildings since then are not on them.
