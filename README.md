@@ -346,10 +346,14 @@ pansharpened cells have no fused scene yet; no new DETER alert, hotspot or CAR
 property since the layers were built; PRODES is at 2025; the three live WMS
 layers and the service answer.
 
-It is not scheduled yet: run it by hand once a month (the 1st is a good day,
-DETER and MapBiomas publish weekly), or create a task in the Claude app's
-scheduled tasks whose prompt runs this command in the pipeline environment and
-reports the output. It writes nothing, so a scheduled run is safe.
+A scheduled task of the Claude app, `acre-map-monthly-check`, runs it on the 1st
+of each month at 09:00 and reports the result in Portuguese. It reads
+`origin/main` (after a `git fetch`, without touching the checkout), keeps its
+environment in `~/.cache/acre-map-check/venv` and writes nothing. It runs only
+while the app is open, and on the next launch if the app was closed at that
+hour; it has no `SERVICE_URL`, so it skips `/health` unless the variable is
+set. Pause or delete it in the app's "Scheduled" list. By hand:
+`python pipeline/check_updates.py`.
 
 ## Service
 
