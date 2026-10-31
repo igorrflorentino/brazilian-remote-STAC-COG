@@ -147,6 +147,10 @@ services. As built on 2026-10-29 (the project now groups them in
   which Atlas shows in the click popup.
 - Atlas renders its basemap labels (towns, villages) above every user layer,
   so the map has no separate places layer.
+- Atlas holds 55,315 of the 55,395 PRODES features built above, and a few of
+  them are `MultiLineString` among the polygons (shapes the simplification or
+  the import collapsed; the cause was not looked into). Every other layer has
+  as many rows in Atlas as in the table, except the CAR one (below).
 - DETER and PRODES are snapshots. To refresh them, rebuild and upload those
   layers with `pipeline/hybrid_layers.js`, then delete the old ones.
 - "Datas das imagens" lists the scenes of the map, so rebuild it whenever the
@@ -473,6 +477,9 @@ the pan at 2 m and the blue, green, red and near-infrared bands at 8 m.
   gets the common range shifted by its own dark level
   (`scene_stats.shifted_ranges`), not a new `--common` run, so the other 33
   links and Atlas layers stay as they are.
+- **Interrupted runs.** The scene is written as `<name>.tif.part` and renamed
+  when whole (with its overviews): a run killed half way never leaves a
+  half-written file that `process_all.py` would take for done.
 - **Storage.** The copies are RGB JPEG 85 COGs like the fused ones, and
   their metadata says the source is the L4 item and that the scene was
   pansharpened. The services read them as any other.
@@ -650,7 +657,17 @@ gcloud run deploy titiler-acre --source . --region southamerica-east1 --project 
 - **Capacity:** one instance handles at most 20 concurrent requests.
 - **Client caches:** clients cache tiles for 24 h. After a scene is
   recompressed, they may show old tiles for up to a day unless the link
-  changes.
+  changes. Atlas' proxy does the same: on 2026-10-31 the layer of
+  `20230704_237_123`, whose object had been rewritten after the layer was
+  created, still returned the older tile (mean difference of 4 levels from the
+  service's) and matched it again a few minutes later, on later requests. After
+  any recompression run `S.runVerify()` (see `atlas_refresh.js`) twice, a few
+  minutes apart.
+- **Two service hostnames:** the service answers on both Cloud Run URLs
+  (`status.url` and the `<service>-<project number>.<region>.run.app` one). The
+  Atlas layers use the second for 31 scenes and the first for 7 (the 2 replaced
+  scenes and the 5 pansharpened ones); they are the same service. Use one
+  `<SERVICE_URL>` for `make_links.py` from now on.
 - **Instance cache:** each instance caches the file headers it has read.
   After objects are overwritten, a warm instance may fail on those scenes
   until it is recycled (about 15 minutes idle) or a new revision is deployed.

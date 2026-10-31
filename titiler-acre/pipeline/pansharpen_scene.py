@@ -131,15 +131,22 @@ def add_overviews(path: Path) -> None:
 
 
 def build(scene: str, out_path: Path, work: Path, max_mbps: float) -> None:
-    """Download the scene's pan and colour bands into work, write out_path and delete the downloads."""
+    """Download the scene's pan and colour bands into work, write out_path and delete the downloads.
+
+    The scene is written under out_path's name plus ".part" and renamed when it is whole, with its
+    overviews: a run killed half way (SIGTERM, power) leaves a .part that the next run overwrites, never
+    a half-written out_path that process_all would take for done.
+    """
     urls = band_urls(scene)
     work.mkdir(parents=True, exist_ok=True)
     files = {b: download(u, work / Path(u).name, max_mbps) for b, u in urls.items()}
+    part = out_path.with_name(out_path.name + ".part")
     try:
-        pansharpen(files[0], [files[b] for b in BANDS], out_path)
-        add_overviews(out_path)
+        pansharpen(files[0], [files[b] for b in BANDS], part)
+        add_overviews(part)
+        part.replace(out_path)
     except BaseException:
-        out_path.unlink(missing_ok=True)  # never leave a half-written scene where process_all would take it for done
+        part.unlink(missing_ok=True)
         raise
     finally:
         for f in files.values():

@@ -5,3 +5,4 @@ __pycache__/
 wmts_links.csv
 pipeline/
 work*/
+.DS_Store
