@@ -39,7 +39,8 @@ ALLOWED_PREFIX = "gs://brazilian-remote-stac-cog-cbers4a-wpm/"
 
 # CC BY 4.0 asks to credit the source and to say the material was changed.
 ATTRIBUTION = (
-    "CBERS-4A WPM imagery: INPE / Brazil Data Cube (CB4A-WPM-PCA-FUSED, CC BY 4.0), "
+    "CBERS-4A WPM imagery: INPE / Brazil Data Cube (CB4A-WPM-PCA-FUSED, and CB4A-WPM-L4-DN "
+    "pansharpened by us for some scenes; CC BY 4.0), "
     "linearly stretched per band and recompressed to JPEG quality 85 for this service"
 )
 

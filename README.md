@@ -632,7 +632,7 @@ Partial downloads resume.
 cd titiler-acre
 gcloud run deploy titiler-acre --source . --region southamerica-east1 --project <PROJECT_ID> \
   --service-account titiler-acre-run@<PROJECT_ID>.iam.gserviceaccount.com --allow-unauthenticated \
-  --memory 2Gi --cpu 2 --concurrency 20 --timeout 120 --min-instances 0 --max-instances 1 --max 1
+  --memory 2Gi --cpu 2 --concurrency 20 --timeout 120 --min-instances 0 --max-instances 1
 ```
 
 - `--source .` builds the `Dockerfile` with Cloud Build. `.gcloudignore`
@@ -695,8 +695,8 @@ here are linearly stretched per band and recompressed (lossy JPEG quality
 85), as recorded in each object's metadata and in the service's attribution
 text. Five scenes (`scenes_pansharpened.txt`) are INPE / Brazil Data Cube
 `CB4A-WPM-L4-DN` (CC BY 4.0) bands that we pansharpened. Their object metadata
-says so; the credit line on the Atlas map says the imagery is "modificadas",
-and the service's own attribution text names only the fused collection.
+says so, and so does the service's attribution text (deployed on 2026-10-30);
+the credit line on the Atlas map says only that the imagery is "modificadas".
 
 Background layers:
 
