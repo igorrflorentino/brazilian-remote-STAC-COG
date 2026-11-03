@@ -217,33 +217,33 @@ def area_ha(geometry) -> float:
 
 def build_sigef(path: Path, keep_names: bool = False, uf: str = "AC") -> dict:
     """SIGEF parcels of a state from INCRA's shapefile, without the people: no technician, ART or registry number."""
-    reader = shapefile.Reader(str(path))
     prj = path.with_suffix(".prj")
     if prj.exists() and "PROJCS" in prj.read_text(errors="ignore")[:200]:
         sys.exit(f"{prj.name} is a projected CRS; this reads SIRGAS 2000 / WGS 84 degrees (export it in geographic coordinates)")
-    names = [f[0] for f in reader.fields[1:]]
     feats, other_state = [], 0
-    for sr in reader.iterShapeRecords():
-        props = dict(zip(names, sr.record, strict=True))
-        state = pick(props, "uf_id", "uf")
-        if state and str(state).upper() not in (uf, "12"):  # the file may hold other states; 12 is the IBGE code of Acre
-            other_state += 1
-            continue
-        geom = shape(sr.shape.__geo_interface__)
-        if geom.is_empty:
-            continue
-        out = {
-            "codigo": pick(props, "parcela_co", "parcela"),
-            "imovel": pick(props, "codigo_imo", "cod_imov"),
-            "situacao": pick(props, "situacao_i", "situ_imov", "situacao"),
-            "status": pick(props, "status"),
-            "certificado_em": date_br(str(pick(props, "data_aprov") or "")) if pick(props, "data_aprov") else None,
-            "municipio": pick(props, "municipio_", "cod_mun", "municipio"),
-            "area_ha": area_ha(geom),
-        }
-        if keep_names:
-            out["nome_area"] = pick(props, "nome_area")
-        feats.append(feature(out, clean(geom, 0.00005)))
+    with shapefile.Reader(str(path)) as reader:  # closed on exit: Windows cannot delete an open .dbf
+        names = [f[0] for f in reader.fields[1:]]
+        for sr in reader.iterShapeRecords():
+            props = dict(zip(names, sr.record, strict=True))
+            state = pick(props, "uf_id", "uf")
+            if state and str(state).upper() not in (uf, "12"):  # the file may hold other states; 12 is the IBGE code of Acre
+                other_state += 1
+                continue
+            geom = shape(sr.shape.__geo_interface__)
+            if geom.is_empty:
+                continue
+            out = {
+                "codigo": pick(props, "parcela_co", "parcela"),
+                "imovel": pick(props, "codigo_imo", "cod_imov"),
+                "situacao": pick(props, "situacao_i", "situ_imov", "situacao"),
+                "status": pick(props, "status"),
+                "certificado_em": date_br(str(pick(props, "data_aprov") or "")) if pick(props, "data_aprov") else None,
+                "municipio": pick(props, "municipio_", "cod_mun", "municipio"),
+                "area_ha": area_ha(geom),
+            }
+            if keep_names:
+                out["nome_area"] = pick(props, "nome_area")
+            feats.append(feature(out, clean(geom, 0.00005)))
     print(f"  sigef: {len(feats)} parcels kept, {other_state} of other states left out", flush=True)
     return collection(feats)
 
