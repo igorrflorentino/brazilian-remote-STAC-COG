@@ -89,7 +89,7 @@ def sample(scene: str) -> tuple[np.ndarray, np.ndarray]:
     unfused_src = {b: rasterio.open("/vsicurl/" + assets[f"BAND{b}"]["href"]) for b in set(UNFUSED_BANDS)}
     try:
         with rasterio.open(cog_url(scene)) as f:
-            coarse = f.read(1, out_shape=(f.height // COARSE, f.width // COARSE), resampling=Resampling.nearest) > 0
+            coarse = f.read([1], out_shape=(1, f.height // COARSE, f.width // COARSE), resampling=Resampling.nearest)[0] > 0
             block = WINDOW_PX // COARSE + 1
             ys, xs = np.nonzero(all_valid(coarse, block))
             for i in rng.choice(len(ys), size=min(WINDOWS, len(ys)), replace=False):
@@ -104,7 +104,7 @@ def sample(scene: str) -> tuple[np.ndarray, np.ndarray]:
                         unfused_src[b], crs=f.crs, transform=transform, width=size, height=size,
                         resampling=Resampling.average, nodata=0,
                     ) as vrt:
-                        bands.append(vrt.read(1).astype(float))
+                        bands.append(vrt.read([1])[0].astype(float))
                 other = np.array(bands)
                 valid = (pixels.min(axis=0) > 0) & (other.min(axis=0) > 0)
                 fused.append(pixels[:, valid])

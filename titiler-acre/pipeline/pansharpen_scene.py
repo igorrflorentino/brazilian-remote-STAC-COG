@@ -112,8 +112,8 @@ def pansharpen(pan_path: Path, ms_paths: list[Path], out_path: Path, gain: float
 
                 for row in range(0, height, strip):
                     top, bottom = max(0, row - MARGIN), min(height, row + strip + MARGIN)
-                    pan = pan_ds.read(1, window=Window(0, top, width, bottom - top))
-                    ms = np.stack([d.read(1, window=Window(0, top // RATIO, width // RATIO, (bottom - top) // RATIO)) for d in ms_ds])
+                    pan = pan_ds.read([1], window=Window(0, top, width, bottom - top))[0]
+                    ms = np.stack([d.read([1], window=Window(0, top // RATIO, width // RATIO, (bottom - top) // RATIO))[0] for d in ms_ds])
                     own = slice(row - top, row - top + min(strip, height - row))
                     pending.append((row, pool.submit(lambda p, m, s: sharpen(p, m, gain)[:, s], pan, ms, own)))
                     flush(WORKERS)
