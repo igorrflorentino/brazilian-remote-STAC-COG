@@ -64,7 +64,7 @@ def valid_footprint(url: str):
         level = len(ds.overviews(1)) - 1
         if level < 0:
             shape_ = (ds.height // UNFUSED_DECIMATION, ds.width // UNFUSED_DECIMATION)
-            mask = (ds.read(1, out_shape=shape_, resampling=Resampling.nearest) != 0).astype("uint8")
+            mask = (ds.read([1], out_shape=(1, *shape_), resampling=Resampling.nearest)[0] != 0).astype("uint8")
             transform = ds.transform * Affine.scale(ds.width / shape_[1], ds.height / shape_[0])
             polys = [shape(g) for g, _ in shapes(mask, mask=mask > 0, transform=transform)]
             return unary_union(polys).buffer(0), ds.crs

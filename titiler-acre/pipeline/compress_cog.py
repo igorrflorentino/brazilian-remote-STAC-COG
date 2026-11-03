@@ -103,7 +103,7 @@ def write_jpeg_rgb(rgba_path: Path, out_path: Path, quality: int, lossless_path:
                 for row in range(0, src.height, STRIP_ROWS):
                     window = Window(0, row, src.width, min(STRIP_ROWS, src.height - row))
                     dst.write(src.read([1, 2, 3], window=window), window=window)
-                    dst.write_mask(src.read(4, window=window), window=window)
+                    dst.write_mask(src.read([4], window=window)[0], window=window)  # rasterio sets .shape on read(4): NumPy 2.5 warns
                 dst.build_overviews(overview_factors(src.width, src.height), Resampling.average)
         rio_copy(
             lossless_path,
