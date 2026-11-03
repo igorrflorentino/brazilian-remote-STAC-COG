@@ -1,0 +1,3 @@
+# LF everywhere, on every OS: the container, the shell scripts' $(cat scenes.txt)
+# and the ignore files all read these files as they are on disk.
+* text=auto eol=lf
