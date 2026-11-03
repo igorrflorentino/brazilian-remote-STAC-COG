@@ -53,6 +53,7 @@ All paths are relative to `titiler-acre/`.
 | `pipeline/check_service.py` | Smoke test of a deployed service, including each scene's rescale ranges. |
 | `pipeline/test_pipeline.py` | Offline tests: stretch arithmetic, `stats.txt` and `stretch.txt`, the pansharpening and the shifted ranges, download resume, upload retries. Run with `python -m unittest discover -s pipeline`. |
 | `pipeline/compare_quality.py` | Compares unstretched codec variants with an original scene, on local files. |
+| `pipeline/clip_lift.py` | Estimates, from INPE's originals, how much averaging the overviews after the clip lifts a scene's dark end: which older copies would gain from a rebuild. |
 | `pipeline/compare_served.py` | Compares the service's tiles with INPE's lossless originals: the measurements in [Compression](#compression). |
 | `pipeline/s2_mosaic.py` | Clips INPE's Sentinel-2 3-month mosaic to Acre, for a background layer. |
 | `pipeline/hybrid_layers.js` | Browser-console script that builds the [hybrid map layers](#hybrid-map-layers) and uploads them to Atlas. |
@@ -472,10 +473,23 @@ stored = clip(round((raw - low) * 255 / (high - low)), 0, 255)
   overview through a VRT (`ScaleOffset`/`ScaleRatio`) while copying to JPEG.
   `low` comes from a 1/16 preview, which is smoother than the 2 m pixels, so
   in hazy scenes 8-12 % of the pixels fall below it. Averaging after the clip
-  at `low` lifted the dark forest of the low zooms by 4-8 levels. Only the 7
-  RGB copies were built this way. The other 26 predate it and still average
-  after the clip, which matters little there: their worst bias in the
-  measurements below is 3.2 levels.
+  at `low` lifted the dark forest of the low zooms by 4-8 levels. 18 copies
+  were built this way: the 12 RGB ones, the 2 scenes of 2025-11-07 that
+  replaced the defective ones, and 4 YCbCr scenes rebuilt afterwards (one on
+  2026-10-30, three on 2026-11-03). The other 20 predate it and still average
+  after the clip.
+  - **How much the clip matters per scene.** On 12 full-resolution windows per
+    scene, the pixels below `low` lift the dark end of the overviews by 0.9
+    display levels at most in those 20 (median under 0.01; 19 of them under 0.4).
+    That is a lower bound, without the gamma. It was 3.7, 2.1 and 1.7 in
+    `20260908_234_127`, `20260909_240_125` and `20240715_236_126`, which were
+    rebuilt for that reason.
+  - **Result of the rebuild.** On those three, the served z12 tile against
+    INPE's original went from a worst band bias of 2.7 / 1.5 / 0.9 to 0.9 /
+    0.2 / 0.3 levels, and PSNR rose by 0.4 / 0.3 / 0.2 dB. At z15 nothing
+    changed. Rebuilding `20230704_237_123`, which has no lift, changed
+    nothing either (z12 26.8 to 26.7 dB), which is why the rest were left.
+    The stretch came out the same in all four, so the links did not change.
 - The rescale and gamma stay in the links; applying them before JPEG as well
   washed out the forest texture at zooms 12-14.
 - **RGB for 7 scenes.** In the hazy 2026 dry-season scenes about a third of
